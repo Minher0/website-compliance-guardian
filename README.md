@@ -10,7 +10,7 @@
 
 Ce Claude Code Skill agit comme une **couche invisible de protection** qui s'intègre à chaque génération de code web. Il ne demande jamais à l'utilisateur s'il faut sécuriser — il sécurise. Il ne demande jamais s'il faut être conforme RGPD — il est conforme.
 
-Il intervient en continu pendant la génération de code, vérifie 12 dimensions de sécurité/conformité, et corrige automatiquement les problèmes détectés.
+Il intervient en continu pendant la génération de code, vérifie 13 dimensions de sécurité/conformité, et corrige automatiquement les problèmes détectés.
 
 ## ✨ Caractéristiques
 
@@ -19,7 +19,7 @@ Il intervient en continu pendant la génération de code, vérifie 12 dimensions
 - **Conformité FR/UE** : RGPD, Loi Informatique et Libertés, CNIL, ePrivacy
 - **Multi-stack** : Next.js (App + Pages Router), React, Node.js (Express, Fastify)
 - **Référentiel OWASP Top 10** intégré
-- **12 dimensions de vérification** par génération de code
+- **13 dimensions de vérification** par génération de code (incluant la cohérence sitemap / footer / pages légales)
 
 ## 📋 Vérifications effectuées
 
@@ -37,6 +37,7 @@ Il intervient en continu pendant la génération de code, vérifie 12 dimensions
 10. **Existence réelle des routes appelées côté client** — cohérence fetch ↔ route serveur
 11. **Secrets & credentials** — aucun en clair, variables d'env obligatoires
 12. **Dépendances** — pas de `eval`, `Function()`, audit `npm`
+13. **Navigation légale cohérente** — triplet sitemap / footer / pages légales synchronisé, URLs canoniques stables
 
 ## 📁 Structure du skill
 
@@ -48,7 +49,7 @@ website-compliance-guardian/
 ├── backend.md        # Routes API, validation, logique serveur, webhooks, cron
 ├── frontend.md       # Forms, appels client, XSS, UX sécurité, accessibilité
 ├── checks.md         # Checklist pré-livraison (critique / élevé / faible)
-└── examples.md       # 15 exemples de bugs + corrections automatiques
+└── examples.md       # 16 exemples de bugs + corrections automatiques
 ```
 
 ## 🚀 Installation
@@ -117,7 +118,7 @@ Quand une norme européenne et une norme américaine divergent, **la norme europ
 
 ## 📚 Exemples de corrections automatiques
 
-Le fichier [`examples.md`](./examples.md) contient 15 exemples détaillés de bugs courants et leur correction automatique :
+Le fichier [`examples.md`](./examples.md) contient 16 exemples détaillés de bugs courants et leur correction automatique :
 
 1. Secret API en clair dans le code
 2. Injection SQL via template string
@@ -134,6 +135,7 @@ Le fichier [`examples.md`](./examples.md) contient 15 exemples détaillés de bu
 13. Headers HTTP de sécurité manquants
 14. JWT secret faible
 15. Modification de password sans re-authentification
+16. Sitemap et footer désynchronisés des pages légales
 
 ## 🤝 Contribution
 

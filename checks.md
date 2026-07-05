@@ -63,8 +63,19 @@ Cette checklist doit être exécutée **avant de marquer toute tâche de génér
 - [ ] Scripts de tracking (GA, Meta, etc.) chargés conditionnellement au consentement
 - [ ] Page `/privacy` existe et est complète
 - [ ] Page `/legal` existe
+- [ ] Page `/cookies` (ou gestion dans le footer) existe
 - [ ] Lien "Gérer mes cookies" accessible dans le footer
 - [ ] Consentement tracé (preuve en BDD)
+
+### Navigation légale cohérente — Triplet sitemap / footer / pages
+- [ ] Chaque page légale (`/privacy`, `/legal`, `/cookies`, `/cgu`) existe physiquement (fichier `app/<page>/page.tsx`)
+- [ ] Chaque page légale est référencée dans le footer (lien persistant sur toutes les pages)
+- [ ] Chaque page légale est listée dans `sitemap.xml` (ou route `app/sitemap.ts`)
+- [ ] Les URLs du footer correspondent exactement aux URLs du sitemap (pas de `/mentions-legales` vs `/legal`)
+- [ ] Pas d'ancre `/#mentions-legales` comme lien légal — page dédiée obligatoire
+- [ ] Chaque page légale a une URL canonique `<link rel="canonical">` stable
+- [ ] `robots.txt` n'exclut pas les pages légales (doivent être indexées)
+- [ ] Si ajout/retrait d'une page légale, le sitemap ET le footer sont mis à jour dans le même commit
 
 ### RGPD — Droits
 - [ ] Bouton "Supprimer mon compte" accessible (droit à l'oubli)

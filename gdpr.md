@@ -276,7 +276,113 @@ Page `/legal` obligatoire contenant :
 - Contact
 - Numéro de TVA intracomunautaire (si applicable)
 
-## 9. DONNÉES SENSIBLES — Article 9 RGPD
+## 9. NAVIGATION LÉGALE COHÉRENTE — Sitemap, footer, pages
+
+Le RGPD et la Loi pour une République Numérique exigent que les pages légales soient **facilement accessibles**. Cela implique une cohérence stricte entre trois éléments : la page physique, le lien dans le footer, et l'entrée dans le sitemap.
+
+### Triplet obligatoire
+
+Pour chaque page légale (`/privacy`, `/legal`, `/cookies`, `/cgu`, `/cgv`) :
+
+1. **Page physique** — fichier `app/<page>/page.tsx` (ou `pages/<page>.tsx`) existant
+2. **Lien footer** — référencé dans le composant footer affiché sur toutes les pages
+3. **Entrée sitemap** — listé dans `app/sitemap.ts` (ou `sitemap.xml` statique)
+
+### Anti-patterns interdits
+
+- ❌ Légal en ancre `/#mentions-legales` — pas de page dédiée, contenu non indexable, non deep-linkable
+- ❌ URLs incohérentes (`/mentions-legales` dans le footer, `/legal` dans le sitemap)
+- ❌ Page légale non listée dans le sitemap (invisible pour les moteurs de recherche)
+- ❌ Page légale dans le sitemap mais pas dans le footer (utilisateur ne peut pas y accéder)
+- ❌ `robots.txt` qui exclut les pages légales (`Disallow: /privacy`)
+- ❌ Page légale sans URL canonique stable
+
+### Implémentation Next.js App Router
+
+```typescript
+// app/sitemap.ts
+import { MetadataRoute } from 'next';
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL!;
+  const lastModified = new Date();
+  
+  return [
+    { url: `${baseUrl}/`, lastModified, changeFrequency: 'weekly', priority: 1 },
+    { url: `${baseUrl}/privacy`, lastModified, changeFrequency: 'yearly', priority: 0.3 },
+    { url: `${baseUrl}/legal`, lastModified, changeFrequency: 'yearly', priority: 0.3 },
+    { url: `${baseUrl}/cookies`, lastModified, changeFrequency: 'yearly', priority: 0.3 },
+    // ... autres pages
+  ];
+}
+```
+
+```tsx
+// components/footer.tsx
+const LEGAL_LINKS = [
+  { href: '/legal', label: 'Mentions légales' },
+  { href: '/privacy', label: 'Politique de confidentialité' },
+  { href: '/cookies', label: 'Gestion des cookies' },
+] as const;
+
+export function Footer() {
+  return (
+    <footer>
+      <nav aria-label="Liens légaux">
+        <ul>
+          {LEGAL_LINKS.map(link => (
+            <li key={link.href}>
+              <a href={link.href}>{link.label}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </footer>
+  );
+}
+```
+
+### URL canonique stable
+
+Chaque page légale doit définir sa canonical pour éviter le duplicate content :
+
+```tsx
+// app/privacy/page.tsx
+export const metadata = {
+  title: 'Politique de confidentialité',
+  alternates: {
+    canonical: '/privacy',
+  },
+  robots: { index: true, follow: true },
+};
+```
+
+### robots.txt — Ne pas exclure les pages légales
+
+```typescript
+// app/robots.ts
+import { MetadataRoute } from 'next';
+
+export default function robots(): MetadataRoute.Robots {
+  return {
+    rules: { userAgent: '*', allow: '/' },
+    // NE PAS mettre Disallow: /privacy, /legal, /cookies
+    sitemap: `${process.env.NEXT_PUBLIC_SITE_URL}/sitemap.xml`,
+  };
+}
+```
+
+### Vérification automatique
+
+À chaque ajout, modification ou suppression d'une page légale, vérifier dans le même commit :
+- [ ] Le fichier `app/<page>/page.tsx` existe
+- [ ] Le composant footer référence cette URL
+- [ ] Le fichier `app/sitemap.ts` liste cette URL
+- [ ] L'URL dans le footer == l'URL dans le sitemap
+- [ ] La page a une canonical
+- [ ] `robots.txt` ne l'exclut pas
+
+## 10. DONNÉES SENSIBLES — Article 9 RGPD
 
 Sont interdites sauf exception (consentement explicite, intérêt public) :
 
@@ -290,14 +396,14 @@ Sont interdites sauf exception (consentement explicite, intérêt public) :
 
 **Règle :** Si l'application demande ce type de donnée, exiger consentement explicite (case à cocher dédiée) + analyse d'impact (AIPD) documentée.
 
-## 10. MINEURS — Règles spécifiques
+## 11. MINEURS — Règles spécifiques
 
 - **Moins de 15 ans** (France, art. 8 RGPD) : consentement parental obligatoire
 - **15-18 ans** : consentement propre, mais mesure de protection renforcée
 - **Pas de profilage** à but marketing vers mineurs
 - **Pas de publicité comportementale** ciblant les mineurs
 
-## 11. TRANSFERTS HORS UE
+## 12. TRANSFERTS HORS UE
 
 Si une donnée perso est envoyée hors UE (ex: AWS us-east, service US) :
 1. Vérifier le pays a une décision d'adéquation (Commission UE)
@@ -314,7 +420,7 @@ module.exports = {
 };
 ```
 
-## 12. NOTIFICATION DE VIOLATION — Plan d'urgence
+## 13. NOTIFICATION DE VIOLATION — Plan d'urgence
 
 En cas de fuite de données :
 1. **Confiner** — révoquer accès/keys compromis
@@ -325,7 +431,7 @@ En cas de fuite de données :
 
 L'application doit avoir un endpoint `/api/security/incident` (interne) pour déclencher ce protocole.
 
-## 13. VÉRIFICATIONS AUTOMATIQUES RGPD APPLIQUÉES PAR LE SKILL
+## 14. VÉRIFICATIONS AUTOMATIQUES RGPD APPLIQUÉES PAR LE SKILL
 
 À chaque génération de code, vérifier :
 
@@ -341,3 +447,7 @@ L'application doit avoir un endpoint `/api/security/incident` (interne) pour dé
 - [ ] Donnée perso en BDD est chiffrée au repos si sensible
 - [ ] Durée de conservation définie (job cron de purge)
 - [ ] Hébergement en UE ou garanties documentées
+- [ ] Triplet sitemap / footer / pages légales cohérent
+- [ ] Pas d'ancre `/#mentions-legales` comme lien légal
+- [ ] URL canonique définie sur chaque page légale
+- [ ] `robots.txt` n'exclut pas les pages légales

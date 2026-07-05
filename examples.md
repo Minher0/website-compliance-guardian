@@ -930,3 +930,100 @@ export async function PATCH(request: Request) {
 **Explication :** Si l'attaquant a volé la session (XSS, cookie volé), il peut changer le password sans connaître l'ancien → prise de contrôle définitive. Correction : exiger le mot de passe actuel, invalider les autres sessions.
 
 **Référence :** OWASP A07 — Authentication Failures
+
+---
+
+## EXEMPLE 16 — Sitemap et footer désynchronisés des pages légales
+
+### ❌ Bug détecté
+
+Le footer contient des liens en ancres vers une section d'une vieille page :
+
+```tsx
+// components/footer.tsx
+<footer>
+  <a href="/#mentions-legales">Mentions légales</a>
+  <a href="/#confidentialite">Confidentialité</a>
+</footer>
+```
+
+La route `app/sitemap.ts` n'existe pas (pas de sitemap généré). Un `sitemap.xml` statique legacy mentionne uniquement `/`, `/contact`, `/guestbook` — les pages légales récemment créées (`/privacy`, `/legal`, `/cookies`) en sont absentes.
+
+### ✅ Correction automatique
+
+**1. Créer / mettre à jour le sitemap**
+
+```typescript
+// app/sitemap.ts
+import { MetadataRoute } from 'next';
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  const baseUrl = process.env.NEXT_PUBLIC_SITE_URL!;
+  const lastModified = new Date();
+
+  return [
+    { url: `${baseUrl}/`, lastModified, changeFrequency: 'weekly', priority: 1 },
+    { url: `${baseUrl}/contact`, lastModified, changeFrequency: 'monthly', priority: 0.7 },
+    { url: `${baseUrl}/guestbook`, lastModified, changeFrequency: 'monthly', priority: 0.7 },
+    { url: `${baseUrl}/legal`, lastModified, changeFrequency: 'yearly', priority: 0.3 },
+    { url: `${baseUrl}/privacy`, lastModified, changeFrequency: 'yearly', priority: 0.3 },
+    { url: `${baseUrl}/cookies`, lastModified, changeFrequency: 'yearly', priority: 0.3 },
+  ];
+}
+```
+
+**2. Mettre à jour le footer avec URLs cohérentes**
+
+```tsx
+// components/footer.tsx
+const LEGAL_LINKS = [
+  { href: '/legal', label: 'Mentions légales' },
+  { href: '/privacy', label: 'Politique de confidentialité' },
+  { href: '/cookies', label: 'Gestion des cookies' },
+] as const;
+
+export function Footer() {
+  return (
+    <footer>
+      <nav aria-label="Liens légaux">
+        <ul>
+          {LEGAL_LINKS.map(link => (
+            <li key={link.href}>
+              <a href={link.href}>{link.label}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </footer>
+  );
+}
+```
+
+**3. Ajouter la canonical sur chaque page légale**
+
+```tsx
+// app/privacy/page.tsx
+export const metadata = {
+  title: 'Politique de confidentialité',
+  alternates: { canonical: '/privacy' },
+  robots: { index: true, follow: true },
+};
+```
+
+**4. Vérifier `robots.txt` n'exclut pas les pages légales**
+
+```typescript
+// app/robots.ts
+import { MetadataRoute } from 'next';
+
+export default function robots(): MetadataRoute.Robots {
+  return {
+    rules: { userAgent: '*', allow: '/' },
+    sitemap: `${process.env.NEXT_PUBLIC_SITE_URL}/sitemap.xml`,
+  };
+}
+```
+
+**Explication :** Le footer en `/#mentions-legales` est un anti-pattern : pas de page dédiée, contenu non deep-linkable, non indexable par les moteurs. L'absence des pages légales du sitemap les rend invisibles pour Google. La divergence footer (`/mentions-legales`) vs sitemap (`/legal`) crée du duplicate content. Correction : triplet cohérent (page physique + footer + sitemap) avec URLs identiques et canonical stable.
+
+**Référence :** `gdpr.md` §9 — Navigation légale cohérente ; Loi pour une République Numérique

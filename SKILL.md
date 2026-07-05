@@ -1,6 +1,6 @@
 ---
 name: website-compliance-guardian
-description: Couche de sécurité et conformité automatique pour toute génération ou modification de code web (Next.js, React, Node.js, API, sites statiques). S'active en mode always-on sans demande explicite. Vérifie OWASP Top 10, RGPD, routes API, validation formulaires, protection endpoints, cookies sécurisés, rate limiting, CSRF, headers HTTP, et existence réelle des routes appelées côté client. Priorité à la correction automatique des problèmes simples.
+description: Couche de sécurité et conformité automatique pour toute génération ou modification de code web (Next.js, React, Node.js, API, sites statiques). S'active en mode always-on sans demande explicite. Vérifie OWASP Top 10, RGPD, routes API, validation formulaires, protection endpoints, cookies sécurisés, rate limiting, CSRF, headers HTTP, existence réelle des routes appelées côté client, et cohérence navigation légale (sitemap / footer / pages). Priorité à la correction automatique des problèmes simples.
 activation: always-on
 scope: web
 priority: critical
@@ -103,6 +103,7 @@ Exécute les vérifications dans cet ordre exact à chaque génération :
 10. **RGPD** — Tout tracker, cookie non essentiel, collecte de donnée perso nécessite consentement explicite. CNIL compatible.
 11. **Routes appelées côté client** — Toute URL appelée par `fetch`/`axios` doit correspondre à une route réellement définie côté serveur. Vérifie l'existence du fichier de route.
 12. **Dépendances** — Aucune `eval`, `Function()`, `child_process.exec` avec entrée utilisateur. Vérifie les vulnérabilités connues (`npm audit`).
+13. **Navigation légale cohérente** — Sitemap, footer et pages légales (`/privacy`, `/legal`, `/cookies`) doivent rester synchronisés : si une page légale existe, elle doit (a) apparaître dans le footer, (b) être listée dans `sitemap.xml`, (c) avoir une URL canonique stable. Vérifier ce triplet à chaque ajout/retrait de page légale.
 
 ## STACKS SUPPORTÉES
 
