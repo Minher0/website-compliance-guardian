@@ -451,3 +451,188 @@ L'application doit avoir un endpoint `/api/security/incident` (interne) pour dé
 - [ ] Pas d'ancre `/#mentions-legales` comme lien légal
 - [ ] URL canonique définie sur chaque page légale
 - [ ] `robots.txt` n'exclut pas les pages légales
+
+## 15. COOKIE WALL INTERDIT — Recommandation CNIL
+
+Un **cookie wall** (blocage de l'accès au contenu derrière le consentement cookies) est **interdit** par la CNIL et la jurisprudence européenne (Planet49 C-673/17).
+
+### Anti-patterns interdits
+
+- ❌ Bloquer l'accès au contenu tant que l'utilisateur n'a pas accepté les cookies
+- ❌ Imposer un paywall uniquement si refus cookies
+- ❌ Désactiver des fonctionnalités essentielles au refus (lecture d'article, recherche)
+- ❌ Forcer le consentement en rendant le refus techniques complexe
+
+### Pattern autorisé
+
+L'utilisateur doit pouvoir **consulter le contenu** même en refusant les cookies non essentiels. La bannière peut apparaître, mais ne bloque pas.
+
+```tsx
+// ❌ INTERDIT — cookie wall
+export function Layout({ children }) {
+  const consent = getConsent();
+  if (!consent) return <CookieWall />; // bloque tout
+  return <>{children}</>;
+}
+
+// ✅ OK — bannière superposée, contenu accessible
+export function Layout({ children }) {
+  return (
+    <>
+      {children} {/* contenu accessible immédiatement */}
+      <CookieBanner /> {/* bannière en overlay, ne bloque pas */}
+    </>
+  );
+}
+```
+
+### Exception : services conditionnels
+
+Pour les services qui nécessitent obligatoirement des cookies (ex: panier e-commerce), tu peux refuser l'accès à CE service spécifique au refus, mais pas au reste du site.
+
+## 16. DPA — Data Processing Agreement (Article 28)
+
+Tout sous-traitant qui traite des données perso pour ton compte doit signer un **DPA** (ou contrat de sous-traitance). C'est obligatoire (art. 28 RGPD).
+
+### Sous-traitants typiques
+
+- Hébergeur (Vercel, AWS, OVH)
+- Email transactionnel (SendGrid, Postmark, SES)
+- Analytics (Google Analytics, Matomo cloud)
+- CRM (HubSpot, Salesforce)
+- Paiement (Stripe — PCI-DSS séparé)
+- Support (Zendesk, Intercom)
+- Monitoring (Sentry, Datadog)
+
+### Document à conserver pour chaque sous-traitant
+
+- Contrat signé avec clause DPA
+- Objet du traitement
+- Durée
+- Nature des données
+- Catégories de personnes
+- Mesures de sécurité
+- Localisation (UE / hors UE + garanties)
+- Sous-traitants ultérieurs (sous-conditions)
+
+### Registre des sous-traitants
+
+Tenir un registre à jour (Article 30) :
+
+```typescript
+// Exemple de structure interne
+const SUBPROCESSORS = [
+  {
+    name: 'Vercel Inc.',
+    purpose: 'Hébergement web',
+    location: 'UE (fran1) + USA ( Edge network)',
+    legalBasis: 'CC 2021/914 + décision adéquation partielle',
+    dpaSigned: '2026-01-15',
+    dataTypes: ['IP', 'cookies techniques'],
+  },
+  {
+    name: 'Stripe',
+    purpose: 'Paiement',
+    location: 'UE (Irlande)',
+    legalBasis: 'PCI-DSS + DPA',
+    dpaSigned: '2026-01-15',
+    dataTypes: ['carte bancaire (tokenisée)'],
+  },
+  // ...
+];
+```
+
+## 17. ARTICLE 30 — Registre des traitements
+
+Tout organisme de plus de 250 personnes, OU tout traitement à risque, doit tenir un **registre des traitements**.
+
+### Contenu obligatoire par traitement
+
+1. Identité et coordonnées du responsable
+2. Finalités du traitement
+3. Catégories de personnes concernées
+4. Catégories de données
+5. Destinataires
+6. Transferts hors UE + garanties
+7. Durées de conservation
+8. Mesures de sécurité
+
+### Exemple de registre (à documenter dans `/privacy` ou en interne)
+
+```markdown
+## Traitement : Création de compte utilisateur
+
+- **Responsable** : [Entreprise], SIRET [...]
+- **Finalité** : Permettre l'accès au service
+- **Personnes** : Utilisateurs inscrits
+- **Données** : Email, mot de passe (hashé), nom, date création
+- **Destinataires** : Service client, hébergeur (Vercel)
+- **Transferts** : Aucun (hébergement UE)
+- **Conservation** : 3 ans après dernière connexion, anonymisation ensuite
+- **Sécurité** : TLS 1.3, chiffrement au repos (AES-256), bcrypt cost 12
+- **Base légale** : Contrat (art. 6.1.b)
+```
+
+## 18. EXEMPTION ANALYTICS CNIL
+
+La CNIL propose une exemption de consentement pour la mesure d'audience web **si toutes les conditions suivantes** sont réunies :
+
+1. **Anonymisation IP** (masquer les 3 derniers octets IPv4 / 6 premiers blocs IPv6)
+2. **Pas de cross-site tracking** (pas de cookie partagé entre domaines)
+3. **Pas de profilage individualisé**
+4. **Pas de fusion avec d'autres données**
+5. **Durée du cookie ≤ 13 mois**
+6. **Pas de partage avec un tiers** (ex: Google Analytics ne l'est pas — voir Plausible, Matomo, etc.)
+
+### Implémentation Matomo (CNIL-compatible sans consentement)
+
+```html
+<!-- Matomo -->
+<script>
+  var _paq = window._paq = window._paq || [];
+  _paq.push(['setCookieDomain', '*.ton-domaine.fr']);
+  _paq.push(['setDomains', ['*.ton-domaine.fr']]);
+  _paq.push(['setDoNotTrack', true]);
+  _paq.push(['disableCookies']); // ⚠️ important pour exemption
+  _paq.push(['trackPageView']);
+  _paq.push(['enableLinkTracking']);
+  (function() {
+    var u = "https://analytics.ton-domaine.fr/";
+    _paq.push(['setTrackerUrl', u+'matomo.php']);
+    _paq.push(['setSiteId', '1']);
+    var d = document, g = d.createElement('script');
+    g.src = u+'matomo.js'; g.async = true;
+    d.head.appendChild(g);
+  })();
+</script>
+```
+
+**⚠️ Google Analytics ne rentre PAS dans l'exemption** (cookies cross-site, IP partiellement aux US). Consentement obligatoire.
+
+### Plausible (alternative simple)
+
+```html
+<script defer 
+  data-domain="ton-domaine.fr"
+  src="https://plausible.io/js/script.js"></script>
+```
+
+Plausible est sans cookie, sans cross-site, conforme exemption CNIL.
+
+## 19. CROSS-DEVICE TRACKING — Consentement
+
+Le suivi cross-device (recognaitre le même utilisateur sur mobile + desktop) constitue un traitement nécessitant **consentement explicite**, même si chaque appareil utilise un cookie essentiel.
+
+### Patterns concernés
+
+- Email-based matching (envoyer un hash d'email à un adtech)
+- Probabilistic matching (IP + user-agent + behavior)
+- Device graph vendor (LiveRamp, Tapad)
+- CDP (Customer Data Platform) avec identifiants persistants
+
+### Règle
+
+Si tu fais du cross-device matching, le consentement doit être :
+- Séparé de l'analytics (catégorie "marketing" ou "personnalisation")
+- Spécifique à cette finalité
+- Révocable indépendamment

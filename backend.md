@@ -477,3 +477,102 @@ function log(level: LogLevel, message: string, meta?: object) {
 - Numéros de carte (utiliser `<last4>` seulement)
 - Données de santé
 - Email complet en clair (masquer : `a***@example.com`)
+
+## 12. FILE UPLOAD SECURITY — Voir `advanced.md` §1
+
+Validation obligatoire en 5 étapes pour tout endpoint d'upload :
+
+1. **Magic bytes** — vérifier les octets réels, jamais `Content-Type` seul
+2. **Nom de fichier** — générer un UUID, valider extension via whitelist
+3. **Taille** — `Content-Length` check + limite (5 Mo photos, 10 Mo PDF)
+4. **Stockage** — hors `public/`, bucket S3 privé + URL signée
+5. **Métadonnées** — re-encoder images avec `sharp` pour stripper EXIF GPS
+
+```typescript
+import sharp from 'sharp';
+import { randomUUID } from 'crypto';
+import { detectRealMimeType } from '@/lib/file-validation';
+
+export async function POST(request: Request) {
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
+  
+  if (!file) return Response.json({ error: 'Fichier manquant' }, { status: 400 });
+  if (file.size > 5 * 1024 * 1024) {
+    return Response.json({ error: 'Trop volumineux (max 5 Mo)' }, { status: 413 });
+  }
+  
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const realMime = await detectRealMimeType(buffer);
+  if (!realMime || !['image/jpeg', 'image/png', 'image/webp'].includes(realMime)) {
+    return Response.json({ error: 'Format non supporté' }, { status: 400 });
+  }
+  
+  // ⚠️ Rejeter SVG (XSS possible)
+  if (realMime === 'image/svg+xml') {
+    return Response.json({ error: 'SVG non autorisé' }, { status: 400 });
+  }
+  
+  // Re-encoder pour stripper EXIF + redimensionner
+  const processed = await sharp(buffer)
+    .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+  
+  const filename = `${randomUUID()}.jpg`;
+  // Stocker en bucket PRIVÉ, pas dans public/
+  await s3.send(new PutObjectCommand({
+    Bucket: process.env.S3_BUCKET!,
+    Key: `uploads/${filename}`,
+    Body: processed,
+    ContentType: 'image/jpeg',
+  }));
+  
+  return Response.json({ 
+    url: `/api/files/${filename}`, // route API qui vérifie l'auth avant de servir
+    filename,
+  });
+}
+```
+
+## 13. WEBSOCKET SECURITY — Voir `advanced.md` §10
+
+- Vérifier `Origin` sur le handshake (jamais `*` en CORS WS)
+- Auth via cookie de session sur le handshake
+- Rate limit par socket (30 messages/sec)
+- Limite taille des messages (10 Ko)
+- Limite de connexions simultanées par utilisateur (ex: 5)
+
+## 14. ORDER INJECTION — Sort param
+
+```typescript
+// ❌ INTERDIT — order injection
+const sort = searchParams.get('sort') ?? 'createdAt';
+await db.$queryRawUnsafe(`SELECT * FROM users ORDER BY ${sort}`);
+
+// ✅ Whitelist
+const ALLOWED_SORT = ['createdAt', 'name', 'email'] as const;
+type SortField = typeof ALLOWED_SORT[number];
+
+const sortParam = searchParams.get('sort');
+const sort: SortField = (ALLOWED_SORT as readonly string[]).includes(sortParam ?? '')
+  ? sortParam as SortField : 'createdAt';
+const order = searchParams.get('order') === 'asc' ? 'asc' : 'desc';
+
+await db.user.findMany({ orderBy: { [sort]: order }, take: 20 });
+```
+
+## 15. PAGINATION DoS
+
+```typescript
+// ❌ VULNÉRABLE — ?limit=1000000
+const limit = parseInt(searchParams.get('limit') ?? '20');
+
+// ✅ Côté serveur
+const MAX_LIMIT = 100;
+const limit = Math.min(parseInt(searchParams.get('limit') ?? '20') || 20, MAX_LIMIT);
+const page = Math.min(parseInt(searchParams.get('page') ?? '1') || 1, 1000);
+const offset = (page - 1) * limit;
+```
+
+Pour les grandes tables : préférer **cursor-based pagination** (`WHERE id > lastId ORDER BY id LIMIT 20`) plutôt que `OFFSET` qui scanne toute la table.

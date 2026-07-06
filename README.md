@@ -10,7 +10,7 @@
 
 Ce Claude Code Skill agit comme une **couche invisible de protection** qui s'intègre à chaque génération de code web. Il ne demande jamais à l'utilisateur s'il faut sécuriser — il sécurise. Il ne demande jamais s'il faut être conforme RGPD — il est conforme.
 
-Il intervient en continu pendant la génération de code, vérifie 13 dimensions de sécurité/conformité, et corrige automatiquement les problèmes détectés.
+Il intervient en continu pendant la génération de code, vérifie 20 dimensions de sécurité/conformité, et corrige automatiquement les problèmes détectés.
 
 ## ✨ Caractéristiques
 
@@ -19,7 +19,8 @@ Il intervient en continu pendant la génération de code, vérifie 13 dimensions
 - **Conformité FR/UE** : RGPD, Loi Informatique et Libertés, CNIL, ePrivacy
 - **Multi-stack** : Next.js (App + Pages Router), React, Node.js (Express, Fastify)
 - **Référentiel OWASP Top 10** intégré
-- **13 dimensions de vérification** par génération de code (incluant la cohérence sitemap / footer / pages légales)
+- **20 dimensions de vérification** par génération de code (OWASP, RGPD, uploads, MFA, race conditions, leaks NEXT_PUBLIC_, cross-origin, supply chain, etc.)
+- **Sujets avancés** couverts : SPF/DKIM/DMARC, subdomain takeover, SRI, prototype pollution, OAuth/PKCE
 
 ## 📋 Vérifications effectuées
 
@@ -38,18 +39,26 @@ Il intervient en continu pendant la génération de code, vérifie 13 dimensions
 11. **Secrets & credentials** — aucun en clair, variables d'env obligatoires
 12. **Dépendances** — pas de `eval`, `Function()`, audit `npm`
 13. **Navigation légale cohérente** — triplet sitemap / footer / pages légales synchronisé, URLs canoniques stables
+14. **Sécurité des uploads** — magic bytes, UUID, SVG interdit, stockage privé, EXIF stripping
+15. **Race conditions** — atomicité des mutations (coupon, stock, solde), idempotence
+16. **Fuite d'information** — user enumeration, `X-Powered-By`, source maps prod, `.git/` exposé
+17. **Cookie prefixes & cache** — `__Host-`, `Cache-Control: no-store` sur pages auth
+18. **Leak NEXT_PUBLIC_** — aucun secret dans les variables préfixées `NEXT_PUBLIC_`
+19. **Cross-origin** — `postMessage` (origin whitelist), WebSocket (Origin check), iframe sandbox
+20. **Order injection & pagination DoS** — sort whitelist, limit plafonné
 
 ## 📁 Structure du skill
 
 ```
 website-compliance-guardian/
 ├── SKILL.md          # Règles principales, comportement global, mode always-on
-├── security.md       # OWASP Top 10, cookies, auth, headers, CSRF, rate limiting
-├── gdpr.md           # RGPD, consentement cookies, privacy policy, droits des personnes
-├── backend.md        # Routes API, validation, logique serveur, webhooks, cron
-├── frontend.md       # Forms, appels client, XSS, UX sécurité, accessibilité
+├── security.md       # OWASP Top 10, cookies, auth, headers, CSRF, rate limiting, MFA, race conditions
+├── gdpr.md           # RGPD, consentement cookies, privacy policy, droits des personnes, DPA, Article 30
+├── backend.md        # Routes API, validation, logique serveur, webhooks, cron, uploads, WebSocket
+├── frontend.md       # Forms, appels client, XSS, UX sécurité, postMessage, Service Worker
 ├── checks.md         # Checklist pré-livraison (critique / élevé / faible)
-└── examples.md       # 16 exemples de bugs + corrections automatiques
+├── examples.md       # 22 exemples de bugs + corrections automatiques
+└── advanced.md       # Sujets avancés (uploads, MFA, race conditions, OAuth, email infra, supply chain)
 ```
 
 ## 🚀 Installation
@@ -118,7 +127,7 @@ Quand une norme européenne et une norme américaine divergent, **la norme europ
 
 ## 📚 Exemples de corrections automatiques
 
-Le fichier [`examples.md`](./examples.md) contient 16 exemples détaillés de bugs courants et leur correction automatique :
+Le fichier [`examples.md`](./examples.md) contient 22 exemples détaillés de bugs courants et leur correction automatique :
 
 1. Secret API en clair dans le code
 2. Injection SQL via template string
@@ -136,6 +145,12 @@ Le fichier [`examples.md`](./examples.md) contient 16 exemples détaillés de bu
 14. JWT secret faible
 15. Modification de password sans re-authentification
 16. Sitemap et footer désynchronisés des pages légales
+17. Upload de SVG avec XSS (magic bytes + path traversal + EXIF)
+18. Énumération d'utilisateurs via inscription
+19. Secret leaked dans NEXT_PUBLIC_
+20. Race condition sur coupon (updateMany atomique)
+21. Cookie wall RGPD (CNIL Planet49)
+22. postMessage sans validation d'origine
 
 ## 🤝 Contribution
 

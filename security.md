@@ -464,3 +464,41 @@ SENTRY_DSN=            # pour monitoring erreurs
 ```
 
 Le fichier `.env.local` (avec valeurs réelles) doit être dans `.gitignore`.
+
+## 11. COOKIE PREFIXES — `__Host-` et `__Secure-`
+
+Voir `advanced.md` §3 pour le détail. **Règle :** tout cookie sensible en production doit utiliser `__Host-` (sauf nécessité de partage cross-sous-domaine).
+
+```typescript
+cookies().set('__Host-session', token, {
+  httpOnly: true, secure: true, sameSite: 'lax', path: '/',
+  // ❌ pas de `domain` avec __Host-
+});
+```
+
+## 12. MFA / 2FA — Voir `advanced.md` §2
+
+Pour toute application manipulant des données sensibles (paiement, santé, admin), la MFA est obligatoire. Pattern TOTP + backup codes + rate limit OTP (5/5min) + re-authentification avant désactivation.
+
+## 13. MASS ASSIGNMENT — Protection Prisma
+
+```typescript
+// ❌ INTERDIT
+await db.user.update({ where: { id }, data: body });
+
+// ✅ Toujours whitelist via Zod
+const UpdateSchema = z.object({ name: z.string().optional(), email: z.string().email().optional() });
+await db.user.update({ where: { id }, data: UpdateSchema.parse(body) });
+```
+
+## 14. REDOS — Regex DoS
+
+Voir `advanced.md` §5. Règle : éviter `(X+)+`, `(X*)*`, limiter la longueur de l'input avant validation, préférer Zod ou `re2`.
+
+## 15. RACE CONDITIONS — TOCTOU
+
+Voir `advanced.md` §4. Pour toute mutation avec check-then-update (stock, coupon, solde) : utiliser `updateMany` avec condition dans `where`, ou transaction avec `SELECT FOR UPDATE`. Idempotence via `Idempotency-Key` pour mutations externes.
+
+## 16. NEXT_PUBLIC_ LEAK — Voir `advanced.md` §20
+
+Aucune variable `NEXT_PUBLIC_*` ne doit contenir un secret. Le prefix `NEXT_PUBLIC_` inline la valeur dans le bundle JS client. Vérifier avec `rg "NEXT_PUBLIC_"` et `grep -r "sk_live\|password\|secret" .next/static/chunks/`.

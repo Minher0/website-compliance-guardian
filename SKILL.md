@@ -1,6 +1,6 @@
 ---
 name: website-compliance-guardian
-description: Couche de sécurité et conformité automatique pour toute génération ou modification de code web (Next.js, React, Node.js, API, sites statiques). S'active en mode always-on sans demande explicite. Vérifie OWASP Top 10, RGPD, routes API, validation formulaires, protection endpoints, cookies sécurisés, rate limiting, CSRF, headers HTTP, existence réelle des routes appelées côté client, et cohérence navigation légale (sitemap / footer / pages). Priorité à la correction automatique des problèmes simples.
+description: Couche de sécurité et conformité automatique pour toute génération ou modification de code web (Next.js, React, Node.js, API, sites statiques). S'active en mode always-on sans demande explicite. Vérifie OWASP Top 10, RGPD, routes API, validation formulaires, protection endpoints, cookies sécurisés, rate limiting, CSRF, headers HTTP, existence réelle des routes appelées côté client, cohérence navigation légale (sitemap / footer / pages), sécurité des uploads de fichiers, MFA, race conditions, fuite d'information, cookie prefixes, leaks NEXT_PUBLIC_, cross-origin (postMessage/WebSocket), order injection, pagination DoS. Priorité à la correction automatique des problèmes simples.
 activation: always-on
 scope: web
 priority: critical
@@ -46,6 +46,7 @@ Avant de retourner tout code web à l'utilisateur, exécute **en silence** les 1
 | Forms, appels client, UX sécurité | `frontend.md` |
 | Checklist finale pré-livraison | `checks.md` |
 | Exemples de bugs et corrections types | `examples.md` |
+| Sujets avancés (uploads, MFA, race conditions, OAuth, email infra, supply chain) | `advanced.md` |
 
 ### 2. Règle de correction automatique
 
@@ -104,6 +105,13 @@ Exécute les vérifications dans cet ordre exact à chaque génération :
 11. **Routes appelées côté client** — Toute URL appelée par `fetch`/`axios` doit correspondre à une route réellement définie côté serveur. Vérifie l'existence du fichier de route.
 12. **Dépendances** — Aucune `eval`, `Function()`, `child_process.exec` avec entrée utilisateur. Vérifie les vulnérabilités connues (`npm audit`).
 13. **Navigation légale cohérente** — Sitemap, footer et pages légales (`/privacy`, `/legal`, `/cookies`) doivent rester synchronisés : si une page légale existe, elle doit (a) apparaître dans le footer, (b) être listée dans `sitemap.xml`, (c) avoir une URL canonique stable. Vérifier ce triplet à chaque ajout/retrait de page légale.
+14. **File upload security** — Magic bytes (pas seulement `Content-Type`), nom UUID (pas `file.name` direct), SVG interdit ou sanitizer, stockage hors `public/`, EXIF stripping via `sharp`, rate limit. Voir `advanced.md` §1.
+15. **Race conditions** — Toute mutation avec check-then-update (coupon, stock, solde) doit être atomique : `updateMany` avec condition dans `where`, ou transaction avec `SELECT FOR UPDATE`. Idempotence via `Idempotency-Key` pour mutations externes. Voir `advanced.md` §4.
+16. **Information disclosure** — Inscription/reset/login avec messages neutres (pas d'énumération d'utilisateurs), `X-Powered-By` supprimé, source maps désactivées en prod, stack traces jamais dans les réponses. Voir `advanced.md` §15.
+17. **Cookie prefixes & cache** — Cookie de session préfixé `__Host-`, `Cache-Control: no-store` sur pages authentifiées, `Vary: Cookie`. Voir `advanced.md` §3, §16.
+18. **NEXT_PUBLIC_ leak** — Aucune variable `NEXT_PUBLIC_*` ne doit contenir un secret (le prefix inline dans le bundle JS client). Vérifier après build avec `grep -rE "sk_live|password|secret" .next/static/chunks/`. Voir `advanced.md` §20.
+19. **Cross-origin** — `postMessage` (origin whitelist + Zod), WebSocket (Origin check + auth), iframe (`sandbox` minimal). Voir `advanced.md` §10.
+20. **Order injection & pagination DoS** — Paramètre `sort` whitelisté, `limit` plafonné côté serveur, cursor-based pagination sur grandes tables. Voir `backend.md` §14, §15.
 
 ## STACKS SUPPORTÉES
 

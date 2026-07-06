@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-06
+
+### Added
+- **Nouveau fichier `advanced.md`** (1300+ lignes) regroupant 20 sujets avancés :
+  - §1 File upload security (magic bytes, path traversal, SVG XSS, EXIF, stockage privé)
+  - §2 MFA / 2FA (TOTP, backup codes, login flow, rate limit OTP)
+  - §3 Cookie prefixes (`__Host-`, `__Secure-`)
+  - §4 Race conditions (TOCTOU, double-spend, atomicité Prisma)
+  - §5 ReDoS (regex catastrophic backtracking)
+  - §6 Body size limits & DoS
+  - §7 Order injection (sort param)
+  - §8 Mass assignment (Prisma)
+  - §9 Prototype pollution (lodash.merge, __proto__)
+  - §10 WebSocket security (Origin, auth, rate limit)
+  - §11 postMessage (origin validation, targetOrigin)
+  - §12 Email infrastructure (SPF, DKIM, DMARC, BIMI)
+  - §13 Subdomain takeover (CNAME dangling)
+  - §14 Subresource Integrity (SRI)
+  - §15 Information disclosure (user enumeration, X-Powered-By, source maps, .git/)
+  - §16 Cache security (Cache-Control: no-store, Vary: Cookie)
+  - §17 OAuth / OIDC (state, PKCE, redirect URI strict, ID token validation)
+  - §18 Supply chain (lockfile, audit, branch protection, SBOM, Docker root, install scripts)
+  - §19 Build & CI (secrets, signed commits, Dependabot)
+  - §20 NEXT_PUBLIC_ leak (vérification bundle après build)
+
+- **7 nouvelles dimensions de vérification** dans `SKILL.md` (14 à 20), portant le total à 20 dimensions
+- **Nouvelles sections dans `security.md`** : §11 cookie prefixes, §12 MFA, §13 mass assignment, §14 ReDoS, §15 race conditions, §16 NEXT_PUBLIC_ leak
+- **Nouvelles sections dans `backend.md`** : §12 file upload security (deep), §13 WebSocket security, §14 order injection, §15 pagination DoS
+- **Nouvelles sections dans `frontend.md`** : §11 postMessage validation, §12 Service Worker security (HTTPS + consent), §13 NEXT_PUBLIC_ leak vérification
+- **Nouvelles sections dans `gdpr.md`** : §15 cookie wall interdit (Planet49), §16 DPA Article 28, §17 Article 30 registre des traitements, §18 exemption analytics CNIL (Matomo/Plausible), §19 cross-device tracking
+- **EXEMPLES 17 à 22 dans `examples.md`** :
+  - EXEMPLE 17 — Upload de SVG avec XSS (magic bytes + UUID + sharp + S3 privé)
+  - EXEMPLE 18 — Énumération d'utilisateurs via inscription (message neutre)
+  - EXEMPLE 19 — Secret leaked dans NEXT_PUBLIC_ (renommage + vérification bundle)
+  - EXEMPLE 20 — Race condition sur coupon (updateMany atomique)
+  - EXEMPLE 21 — Cookie wall RGPD (bannière overlay non bloquante)
+  - EXEMPLE 22 — postMessage sans validation d'origine (whitelist + Zod + targetOrigin)
+- **8 nouvelles checklists dans `checks.md`** : file upload, MFA, info disclosure, race conditions, cookie prefixes/cache, order injection/pagination, cross-origin, supply chain, RGPD avancé
+
+### Changed
+- `SKILL.md` description mise à jour avec toutes les nouvelles dimensions
+- `README.md` : 13 → 20 dimensions, 16 → 22 exemples, nouveau fichier `advanced.md` dans la structure
+- `gdpr.md` : 14 → 19 sections
+
 ## [1.1.0] - 2026-07-06
 
 ### Added

@@ -132,6 +132,82 @@ Cette checklist doit être exécutée **avant de marquer toute tâche de génér
 - [ ] Confirmation avant action destructrice
 - [ ] Liens externes en `rel="noopener noreferrer"`
 
+### File upload security — Voir `advanced.md` §1
+- [ ] Magic bytes vérifiés (pas seulement `Content-Type`)
+- [ ] Nom de fichier généré (UUID, pas `file.name` direct)
+- [ ] Extension validée via whitelist
+- [ ] SVG interdit ou sanitizer (DOMPurify + CSP `default-src 'none'`)
+- [ ] Taille limitée (`Content-Length` check + limite 5 Mo photos)
+- [ ] Stockage hors `public/` (bucket S3 privé ou dossier non servi)
+- [ ] Images re-encodées avec `sharp` (strip EXIF GPS)
+- [ ] Rate limiting sur endpoint d'upload
+
+### MFA / 2FA — Voir `advanced.md` §2
+- [ ] TOTP setup avec secret chiffré en BDD
+- [ ] Backup codes générés (10), hashés en BDD, à usage unique
+- [ ] Rate limit OTP (5 tentatives / 5 min)
+- [ ] Re-authentification (password + MFA) pour désactiver MFA
+- [ ] Notification email quand MFA activée/désactivée
+- [ ] Login flow : challenge MFA séparé, pas de session créée avant validation
+- [ ] SMS 2FA évité (préférer TOTP)
+
+### Information disclosure — Voir `advanced.md` §15
+- [ ] Inscription : message neutre (ne révèle pas si email existe)
+- [ ] Reset password : message neutre
+- [ ] Login : message identique "identifiants invalides"
+- [ ] `X-Powered-By` header supprimé (`poweredByHeader: false`)
+- [ ] Source maps désactivées en prod (`productionBrowserSourceMaps: false`)
+- [ ] Stack traces jamais dans les réponses API (uniquement en logs internes)
+- [ ] `.git/` non accessible publiquement (vérifier `curl /.git/HEAD`)
+- [ ] Pas d'erreur 404 révélant des routes internes
+
+### Race conditions — Voir `advanced.md` §4
+- [ ] Coupons / promotions : `updateMany` atomique avec condition dans `where`
+- [ ] Stock / inventaire : transaction avec `SELECT FOR UPDATE`
+- [ ] Retraits / transferts de solde : transaction + check dans la même TX
+- [ ] Idempotence : header `Idempotency-Key` pour mutations externes (paiement, email)
+- [ ] Contraintes `UNIQUE` en BDD pour éviter doublons (cartCoupon, etc.)
+- [ ] Tests de charge avec requêtes parallèles sur mutations sensibles
+
+### Cookie prefixes & cache security — Voir `advanced.md` §3, §16
+- [ ] Cookie de session préfixé `__Host-` (ou `__Secure-` si cross-sous-domaine)
+- [ ] Pages authentifiées : `Cache-Control: no-store, no-cache, must-revalidate, private`
+- [ ] `Vary: Cookie` sur réponses personnalisées
+- [ ] Logout : headers `Cache-Control: no-store` + invalidation session serveur
+
+### Order injection & pagination DoS — Voir `backend.md` §14, §15
+- [ ] Paramètre `sort` validé via whitelist de colonnes
+- [ ] Paramètre `order` validé (`asc` | `desc`)
+- [ ] Paramètre `limit` plafonné côté serveur (max 100)
+- [ ] Paramètre `page` plafonné (max 1000)
+- [ ] Préférer cursor-based pagination sur grandes tables
+
+### Cross-origin (postMessage, WebSocket, iframe) — Voir `frontend.md` §11, `advanced.md` §10
+- [ ] `postMessage` receive : `event.origin` validé via whitelist
+- [ ] `postMessage` send : `targetOrigin` explicite (jamais `*`)
+- [ ] WebSocket : `Origin` vérifié sur handshake
+- [ ] WebSocket : auth sur handshake (cookie ou token)
+- [ ] WebSocket : rate limit par socket
+- [ ] iframes tierces : `sandbox` minimal (pas `allow-all`)
+- [ ] iframes tierces : SRI sur scripts chargés
+
+### Supply chain & build — Voir `advanced.md` §18, §19
+- [ ] `npm audit --audit-level=high` en CI
+- [ ] Lockfile commité
+- [ ] Branche `main` protégée (pas de push direct, PR obligatoire)
+- [ ] Reviews obligatoires (min 1, idéalement 2)
+- [ ] Status checks CI obligatoires avant merge
+- [ ] Dockerfile : user non-root (pas de `USER root`)
+- [ ] Dépendabot / Renovate activé
+- [ ] SRI (`integrity`) sur tous les scripts CDN tiers
+
+### RGPD avancé — Voir `gdpr.md` §15-19
+- [ ] Pas de cookie wall (contenu accessible sans consentement)
+- [ ] DPA signé avec chaque sous-traitant (hébergeur, email, analytics)
+- [ ] Registre des traitements (Article 30) à jour
+- [ ] Analytics : Matomo/Plausible sans cookie OU GA avec consentement
+- [ ] Pas de cross-device tracking sans consentement explicite séparé
+
 ## ℹ️ FAIBLE — À corriger si temps
 
 ### Accessibilité (RGAA 4.1)

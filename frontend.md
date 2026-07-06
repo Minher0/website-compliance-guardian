@@ -498,3 +498,125 @@ export function ClientOnly({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 ```
+
+## 11. POSTMESSAGE — Validation d'origine obligatoire
+
+```typescript
+// ❌ INTERDIT — n'importe quelle fenêtre peut envoyer des messages
+window.addEventListener('message', (event) => {
+  if (event.data.type === 'setConfig') {
+    localStorage.setItem('config', JSON.stringify(event.data.config));
+  }
+});
+
+// ✅ TOUJOURS valider origin + structure
+const ALLOWED_ORIGINS = ['https://embed.example.com'];
+
+window.addEventListener('message', (event) => {
+  if (!ALLOWED_ORIGINS.includes(event.origin)) return; // 1. Origin
+  if (typeof event.data !== 'object' || event.data === null) return; // 2. Type
+  if (event.data.type !== 'setConfig') return;
+  
+  const parsed = ConfigSchema.safeParse(event.data.config); // 3. Zod
+  if (!parsed.success) return;
+  
+  setConfig(parsed.data);
+});
+
+// À l'envoi : toujours préciser targetOrigin (jamais '*')
+iframe.contentWindow?.postMessage(
+  { type: 'config', payload },
+  'https://embed.example.com'
+);
+```
+
+## 12. SERVICE WORKER — Sécurité & cache
+
+### HTTPS obligatoire
+
+Les service workers ne fonctionnent qu'en HTTPS (ou `localhost` en dev). Si tu déploies en HTTP, ça casse silencieusement.
+
+### Consentement pour le cache personnalisé
+
+Un service worker peut cacher des données personnelles (panier, préférences). Si l'utilisateur retire son consentement, **vider le cache** :
+
+```typescript
+// public/sw.js
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open('v1').then((cache) => cache.addAll([
+      '/',
+      '/static/css/main.css',
+      // ⚠️ Ne JAMAIS cacher des pages authentifiées ici
+    ]))
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  
+  // Pas de cache pour les routes API authentifiées
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/dashboard')) {
+    return; // laisse passer la requête normalement
+  }
+  
+  // Cache-first pour les assets statiques
+  if (url.pathname.startsWith('/static/')) {
+    event.respondWith(caches.match(event.request));
+    return;
+  }
+  
+  // Network-first pour le reste
+  event.respondWith(
+    fetch(event.request).catch(() => caches.match(event.request))
+  );
+});
+
+// Écouter les messages de consentement
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'CLEAR_CACHE') {
+    caches.keys().then((keys) => 
+      Promise.all(keys.map((k) => caches.delete(k)))
+    );
+  }
+});
+```
+
+### Enregistrement conditionnel
+
+```typescript
+// Enregistrer le SW UNIQUEMENT après consentement
+if (consent?.functional) {
+  navigator.serviceWorker.register('/sw.js');
+}
+```
+
+## 13. NEXT_PUBLIC_ LEAK — Vérification du bundle
+
+Toute variable `NEXT_PUBLIC_*` est inline dans le bundle client. **Aucun secret ne doit l'être.**
+
+```typescript
+// ❌ FUITE CRITIQUE — ce secret est dans le JS téléchargé par tous les visiteurs
+process.env.NEXT_PUBLIC_STRIPE_SECRET_KEY
+process.env.NEXT_PUBLIC_JWT_SECRET
+process.env.NEXT_PUBLIC_DATABASE_URL
+
+// ✅ OK — clés publiques uniquement
+process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY  // pk_live_*
+process.env.NEXT_PUBLIC_GA_ID                    // G-XXXXXX
+process.env.NEXT_PUBLIC_SITE_URL                // https://...
+```
+
+### Vérifier après build
+
+```bash
+# Build de production
+npm run build
+
+# Chercher les secrets dans le bundle
+grep -rE "(sk_live_|sk_test_|password|secret|token|api_key)" .next/static/chunks/
+# Si retour non vide → FUITE CRITIQUE
+
+# Lister toutes les NEXT_PUBLIC_ exposées
+grep -roE "NEXT_PUBLIC_[A-Z_]+" .next/static/chunks/ | sort -u
+```
