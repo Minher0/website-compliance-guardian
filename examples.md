@@ -1538,3 +1538,570 @@ function sendMessageToIframe(iframe: HTMLIFrameElement, message: unknown) {
 **Explication :** Sans validation d'origin, n'importe quelle fenêtre peut envoyer un message. Le pattern corrigé valide 3 choses : (1) l'expéditeur est dans la whitelist des origins, (2) la structure du message est exactement celle attendue (Zod discriminated union), (3) l'URL de redirection est validée comme étant relative ou même domaine.
 
 **Référence :** `frontend.md` §11 — postMessage ; `advanced.md` §10
+
+---
+
+## EXEMPLE 23 — Progressive lockout persistant (Prisma + Vercel)
+
+Cet exemple est le pattern de référence pour toute route `/api/auth/login`. Il combine :
+- Compteur d'échecs persistant en DB (survit aux cold starts Vercel)
+- Lockout progressif (3→30s, 5→1min, 7→5min, 10→15min, 15→1h, 20→24h, 25+→permanent)
+- Basé sur l'IP (non contournable par clearing cookie)
+- Header `Retry-After` sur 429
+- UI avec countdown
+
+### ❌ Bug initial — Rate limit en mémoire
+
+```typescript
+// ❌ INUTILE sur Vercel — cold start reset
+const loginAttempts = new Map<string, { count: number; lockedUntil: number }>();
+
+export async function POST(request: Request) {
+  const ip = request.headers.get('x-forwarded-for') ?? 'unknown';
+  const { email, password } = await request.json();
+  
+  const attempt = loginAttempts.get(ip);
+  if (attempt?.lockedUntil && attempt.lockedUntil > Date.now()) {
+    return Response.json({ error: 'Locked' }, { status: 429 });
+  }
+  
+  const user = await db.user.findUnique({ where: { email } });
+  if (!user || !await bcrypt.compare(password, user.passwordHash)) {
+    const count = (attempt?.count ?? 0) + 1;
+    loginAttempts.set(ip, {
+      count,
+      lockedUntil: count >= 5 ? Date.now() + 15 * 60 * 1000 : 0,
+    });
+    return Response.json({ error: 'Invalid' }, { status: 401 });
+  }
+  
+  loginAttempts.delete(ip);
+  return Response.json({ success: true });
+}
+```
+
+**Problèmes :**
+1. `Map` en mémoire → reset à chaque cold start Vercel (toutes les ~5 min d'inactivité)
+2. Lockout fixe à 15 min après 5 échecs → pas d'escalade, un attaquant patient fait 5/min indéfiniment
+3. Pas de `Retry-After` header
+4. Pas d'UI countdown
+
+### ✅ Correction complète
+
+**1. Schéma Prisma**
+
+```prisma
+// prisma/schema.prisma
+model LoginAttempt {
+  id             String    @id @default(cuid())
+  ip             String    @unique
+  failedCount    Int       @default(0)
+  lockedUntil    DateTime?
+  lastAttemptAt  DateTime  @default(now())
+  permanentLock  Boolean   @default(false)
+  
+  @@index([lockedUntil])
+}
+```
+
+**2. Logique de lockout progressif**
+
+```typescript
+// src/lib/login-attempts.ts
+import { db } from '@/lib/db';
+
+// [tentatives, durée de lockout en ms]
+const LOCKOUT_SCHEDULE: Array<[number, number]> = [
+  [3, 30_000],          // 30 sec
+  [5, 60_000],          // 1 min
+  [7, 5 * 60_000],      // 5 min
+  [10, 15 * 60_000],    // 15 min
+  [15, 60 * 60_000],    // 1 hour
+  [20, 24 * 60 * 60_000], // 24 hours
+  [25, 365 * 24 * 60 * 60_000], // ~1 year (effectively permanent)
+];
+
+function getLockDuration(failedCount: number): { durationMs: number; permanent: boolean } {
+  let durationMs = 0;
+  let permanent = false;
+  
+  for (const [threshold, duration] of LOCKOUT_SCHEDULE) {
+    if (failedCount >= threshold) {
+      durationMs = duration;
+      permanent = duration > 30 * 24 * 60 * 60_000; // > 30 days = permanent
+    }
+  }
+  return { durationMs, permanent };
+}
+
+export async function checkLockout(ip: string): Promise<{
+  locked: boolean;
+  lockedUntil?: Date;
+  retryAfterMs?: number;
+  permanent: boolean;
+}> {
+  const attempt = await db.loginAttempt.findUnique({ where: { ip } });
+  
+  if (!attempt) {
+    return { locked: false, permanent: false };
+  }
+  
+  if (attempt.permanentLock) {
+    return { locked: true, permanent: true };
+  }
+  
+  if (attempt.lockedUntil && attempt.lockedUntil > new Date()) {
+    const retryAfterMs = attempt.lockedUntil.getTime() - Date.now();
+    return {
+      locked: true,
+      lockedUntil: attempt.lockedUntil,
+      retryAfterMs,
+      permanent: false,
+    };
+  }
+  
+  return { locked: false, permanent: false };
+}
+
+export async function recordFailedAttempt(ip: string): Promise<{
+  locked: boolean;
+  lockedUntil?: Date;
+  retryAfterMs?: number;
+  permanent: boolean;
+}> {
+  const existing = await db.loginAttempt.findUnique({ where: { ip } });
+  
+  // ⚠️ NE PAS remettre à 0 si le lockout vient d'expirer — escalader
+  const newCount = (existing?.failedCount ?? 0) + 1;
+  const { durationMs, permanent } = getLockDuration(newCount);
+  
+  const lockedUntil = durationMs > 0 
+    ? new Date(Date.now() + durationMs) 
+    : null;
+  
+  await db.loginAttempt.upsert({
+    where: { ip },
+    update: {
+      failedCount: newCount,
+      lockedUntil,
+      lastAttemptAt: new Date(),
+      permanentLock: permanent,
+    },
+    create: {
+      ip,
+      failedCount: newCount,
+      lockedUntil,
+      lastAttemptAt: new Date(),
+      permanentLock: permanent,
+    },
+  });
+  
+  if (durationMs > 0) {
+    return {
+      locked: true,
+      lockedUntil: lockedUntil ?? undefined,
+      retryAfterMs: durationMs,
+      permanent,
+    };
+  }
+  
+  return { locked: false, permanent };
+}
+
+export async function resetAttempts(ip: string): Promise<void> {
+  await db.loginAttempt.deleteMany({ where: { ip } });
+}
+```
+
+**3. Route API de login**
+
+```typescript
+// app/api/auth/login/route.ts
+import { z } from 'zod';
+import bcrypt from 'bcrypt';
+import { db } from '@/lib/db';
+import { checkLockout, recordFailedAttempt, resetAttempts } from '@/lib/login-attempts';
+import { logger } from '@/lib/logger';
+
+const LoginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1).max(1000), // max pour éviter DoS bcrypt
+});
+
+function getClientIp(request: Request): string {
+  return (
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+    request.headers.get('cf-connecting-ip') ??
+    'unknown'
+  );
+}
+
+export async function POST(request: Request) {
+  const ip = getClientIp(request);
+  
+  // 1. Vérifier le lockout AVANT tout traitement
+  const lockoutStatus = await checkLockout(ip);
+  if (lockoutStatus.locked) {
+    const retryAfterSec = Math.ceil((lockoutStatus.retryAfterMs ?? 0) / 1000);
+    return Response.json(
+      { 
+        error: lockoutStatus.permanent 
+          ? 'Compte bloqué définitivement. Contactez le support.' 
+          : 'Trop de tentatives. Réessayez plus tard.',
+      },
+      { 
+        status: 429,
+        headers: {
+          'Retry-After': String(retryAfterSec),
+        },
+      }
+    );
+  }
+  
+  // 2. Validation
+  const body = await request.json().catch(() => null);
+  const parsed = LoginSchema.safeParse(body);
+  if (!parsed.success) {
+    return Response.json({ error: 'Identifiants invalides' }, { status: 400 });
+  }
+  
+  // 3. Lookup utilisateur
+  const user = await db.user.findUnique({
+    where: { email: parsed.data.email.toLowerCase() },
+    select: { id: true, email: true, passwordHash: true, name: true },
+  });
+  
+  // 4. Vérification password (même si user n'existe pas, pour éviter user enumeration)
+  const passwordValid = user 
+    ? await bcrypt.compare(parsed.data.password, user.passwordHash)
+    : false;
+  
+  if (!user || !passwordValid) {
+    // 5. Enregistrer l'échec — ESCALADER le lockout
+    const newLockout = await recordFailedAttempt(ip);
+    
+    // Log sécurité (masquer email)
+    await logger.security('login_failed', {
+      ip,
+      email: maskEmail(parsed.data.email),
+      failedCount: newLockout.locked ? 'locked' : 'incremented',
+    });
+    
+    // Message neutre (ne pas leak si l'email existe)
+    if (newLockout.locked && !newLockout.permanent) {
+      const retryAfterSec = Math.ceil((newLockout.retryAfterMs ?? 0) / 1000);
+      return Response.json(
+        { error: 'Trop de tentatives. Réessayez plus tard.' },
+        { 
+          status: 429,
+          headers: { 'Retry-After': String(retryAfterSec) },
+        }
+      );
+    }
+    
+    if (newLockout.permanent) {
+      return Response.json(
+        { error: 'Compte bloqué. Contactez le support.' },
+        { status: 429 }
+      );
+    }
+    
+    return Response.json({ error: 'Identifiants invalides' }, { status: 401 });
+  }
+  
+  // 6. Login réussi — reset compteur
+  await resetAttempts(ip);
+  
+  // 7. Créer session
+  const token = createJwtToken(user.id);
+  const response = Response.json({ success: true, user: { id: user.id, email: user.email, name: user.name } });
+  response.cookies.set('__Host-session', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+    path: '/',
+    // ⚠️ PAS de maxAge pour session admin — session-only
+  });
+  
+  return response;
+}
+
+function maskEmail(email: string): string {
+  const [local, domain] = email.split('@');
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+```
+
+**4. UI avec countdown**
+
+```tsx
+// components/login-form.tsx
+'use client';
+import { useState, useEffect } from 'react';
+
+export function LoginForm() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [lockedUntil, setLockedUntil] = useState<Date | null>(null);
+  const [retryAfter, setRetryAfter] = useState(0);
+  
+  // Countdown
+  useEffect(() => {
+    if (!lockedUntil) return;
+    const interval = setInterval(() => {
+      const remaining = Math.ceil((lockedUntil.getTime() - Date.now()) / 1000);
+      if (remaining <= 0) {
+        setLockedUntil(null);
+        setRetryAfter(0);
+        setError('');
+      } else {
+        setRetryAfter(remaining);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lockedUntil]);
+  
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (lockedUntil) return;
+    
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    
+    if (response.status === 429) {
+      const retryAfterSec = parseInt(response.headers.get('Retry-After') ?? '0');
+      const until = new Date(Date.now() + retryAfterSec * 1000);
+      setLockedUntil(until);
+      setRetryAfter(retryAfterSec);
+      const data = await response.json();
+      setError(data.error);
+      return;
+    }
+    
+    if (!response.ok) {
+      const data = await response.json();
+      setError(data.error);
+      return;
+    }
+    
+    // Login OK
+    window.location.href = '/dashboard';
+  };
+  
+  const formatCountdown = (sec: number) => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return `${h}h ${m}min ${s}s`;
+    if (m > 0) return `${m}min ${s}s`;
+    return `${s}s`;
+  };
+  
+  return (
+    <form onSubmit={submit}>
+      <input
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        disabled={!!lockedUntil}
+        required
+      />
+      <input
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        disabled={!!lockedUntil}
+        required
+      />
+      
+      {error && (
+        <p role="alert" aria-live="assertive">
+          {error}
+          {lockedUntil && retryAfter > 0 && (
+            <span> — Réessayez dans {formatCountdown(retryAfter)}</span>
+          )}
+        </p>
+      )}
+      
+      <button type="submit" disabled={!!lockedUntil}>
+        {lockedUntil ? `Bloqué (${formatCountdown(retryAfter)})` : 'Se connecter'}
+      </button>
+    </form>
+  );
+}
+```
+
+**5. Job cron de purge (optionnel)**
+
+Pour éviter que la table `LoginAttempt` ne grossisse indéfiniment :
+
+```typescript
+// app/api/cron/purge-login-attempts/route.ts
+export async function GET(request: Request) {
+  if (request.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  
+  // Purger les entrées de plus de 30 jours sans lockout actif
+  await db.loginAttempt.deleteMany({
+    where: {
+      lastAttemptAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+      permanentLock: false,
+      OR: [
+        { lockedUntil: null },
+        { lockedUntil: { lt: new Date() } },
+      ],
+    },
+  });
+  
+  return Response.json({ purged: true });
+}
+```
+
+```json
+// vercel.json
+{
+  "crons": [
+    { "path": "/api/cron/purge-login-attempts", "schedule": "0 3 * * *" }
+  ]
+}
+```
+
+**Explication :**
+
+1. **Persistance DB** : La table `LoginAttempt` survit aux cold starts Vercel. Le compteur reste même si l'instance est détruite.
+2. **Lockout progressif** : 3 échecs → 30s, 5 → 1min, etc. L'escalade dissuade les attaques patientes.
+3. **Pas de reset après expiration** : Si l'utilisateur attend 5 min (lockout expiré), le 8e échec déclenche 15 min (pas retour à 30s). Seul un login réussi remet à 0.
+4. **IP-based** : `x-forwarded-for` sur Vercel. Clearing les cookies ne change rien.
+5. **`Retry-After` header** : Permet à l'UI d'afficher le countdown exact.
+6. **Message neutre** : "Identifiants invalides" ne révèle pas si l'email existe.
+7. **`__Host-` prefix** : Le cookie de session est protégé contre l'injection subdomain.
+8. **Pas de `maxAge`** : Session-only, le cookie disparaît à la fermeture du navigateur.
+
+**Référence :** `security.md` §17 (Pièges serverless) + §18 (Brute-force protection) ; `false-positives.md` #1, #2, #3, #30
+
+---
+
+## EXEMPLE 24 — Route /api/admin/settings publique utilisée comme check auth
+
+### ❌ Bug détecté
+
+```typescript
+// app/api/admin/settings/route.ts
+export async function GET(request: Request) {
+  // ⚠️ Route PUBLIQUE — utilisée par le client pour vérifier l'auth
+  const session = await getSession();
+  
+  if (!session) {
+    return Response.json({ authenticated: false }, { status: 200 });
+  }
+  
+  // ⚠️ Retourne les settings admin à tout utilisateur authentifié
+  const settings = await db.adminSettings.findFirst();
+  return Response.json({ 
+    authenticated: true,
+    settings, // ← contient des secrets (SMTP, API keys, etc.)
+  });
+}
+
+// Côté client
+// components/admin-shell.tsx
+useEffect(() => {
+  fetch('/api/admin/settings')
+    .then(r => r.json())
+    .then(data => {
+      if (!data.authenticated) {
+        router.push('/login');
+      } else {
+        setSettings(data.settings);
+      }
+    });
+}, []);
+```
+
+**Problème :**
+- La route est publique (pas de middleware d'auth)
+- N'importe qui peut appeler `/api/admin/settings` et obtenir `data.settings` si sa session est valide
+- Si un utilisateur non-admin est authentifié (session valide), il obtient les settings admin
+- Les settings peuvent contenir des secrets (SMTP password, API keys, etc.)
+
+### ✅ Correction automatique
+
+```typescript
+// app/api/admin/me/route.ts — NOUVELLE route dédiée pour le check auth
+import { auth } from '@/lib/auth';
+import { requireRole } from '@/lib/rbac';
+
+export async function GET(request: Request) {
+  const session = await auth();
+  
+  if (!session) {
+    return Response.json({ authenticated: false }, { status: 401 });
+  }
+  
+  try {
+    requireRole(session, ['admin']);
+  } catch {
+    return Response.json({ authenticated: false, reason: 'insufficient_role' }, { status: 403 });
+  }
+  
+  // Retourne UNIQUEMENT les infos nécessaires pour l'UI — jamais de secrets
+  return Response.json({
+    authenticated: true,
+    user: {
+      id: session.userId,
+      email: session.email,
+      name: session.name,
+      role: session.role,
+    },
+  });
+}
+
+// app/api/admin/settings/route.ts — PROTÉGÉE, retourne les settings
+import { auth } from '@/lib/auth';
+import { requireRole } from '@/lib/rbac';
+
+export async function GET(request: Request) {
+  const session = await auth();
+  if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  
+  requireRole(session, ['admin']); // throws si pas admin
+  
+  const settings = await db.adminSettings.findFirst({
+    select: {
+      // ⚠️ NE JAMAIS retourner les secrets
+      siteName: true,
+      maintenanceMode: true,
+      // ❌ PAS smtpPassword, stripeSecretKey, etc.
+    },
+  });
+  
+  return Response.json(settings);
+}
+
+// Côté client — corrigé
+// components/admin-shell.tsx
+useEffect(() => {
+  fetch('/api/admin/me') // ← route dédiée pour le check
+    .then(r => {
+      if (r.status === 401 || r.status === 403) {
+        router.push('/login');
+        return null;
+      }
+      return r.json();
+    })
+    .then(data => {
+      if (data?.authenticated) {
+        setUser(data.user);
+      }
+    });
+}, []);
+```
+
+**Explication :** Séparer le "check d'auth" (route publique qui retourne juste `{ authenticated, user }`) de la "récupération de données sensibles" (route protégée qui retourne les settings). La route de check ne doit JAMAIS retourner de secrets, même partiels. La route de données doit toujours vérifier le rôle.
+
+**Référence :** `false-positives.md` #7 — Route publique utilisée comme check auth

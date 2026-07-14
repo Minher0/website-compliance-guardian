@@ -15,12 +15,15 @@ Il intervient en continu pendant la génération de code, vérifie 20 dimensions
 ## ✨ Caractéristiques
 
 - **Always-on** : s'active automatiquement sur toute tâche de génération web
-- **Correction automatique** : ne demande jamais confirmation pour un problème critique
+- **Vérification OBLIGATOIRE non-contournable** : section `🔒 Compliance Guardian` exigée dans toute réponse contenant du code web
+- **Qualité pas présence** : détecte les faux positifs (rate limit en mémoire = KO sur Vercel, `===` pour password = timing attack, etc.)
+- **Pièges serverless** : couvre Vercel, Netlify, Cloudflare Workers, Deno Deploy (cold start, `public/`, Edge runtime, logs éphémères)
+- **Brute-force progressif + persistant** : lockout 3→30s, 5→1min, 7→5min, 10→15min, 15→1h, 20→24h, 25+→permanent, stocké en DB
 - **Conformité FR/UE** : RGPD, Loi Informatique et Libertés, CNIL, ePrivacy
 - **Multi-stack** : Next.js (App + Pages Router), React, Node.js (Express, Fastify)
 - **Référentiel OWASP Top 10** intégré
-- **20 dimensions de vérification** par génération de code (OWASP, RGPD, uploads, MFA, race conditions, leaks NEXT_PUBLIC_, cross-origin, supply chain, etc.)
-- **Sujets avancés** couverts : SPF/DKIM/DMARC, subdomain takeover, SRI, prototype pollution, OAuth/PKCE
+- **20 dimensions de vérification** par génération de code
+- **Sujets avancés** couverts : MFA, race conditions, leaks NEXT_PUBLIC_, cross-origin, supply chain, SPF/DKIM/DMARC
 
 ## 📋 Vérifications effectuées
 
@@ -51,14 +54,15 @@ Il intervient en continu pendant la génération de code, vérifie 20 dimensions
 
 ```
 website-compliance-guardian/
-├── SKILL.md          # Règles principales, comportement global, mode always-on
-├── security.md       # OWASP Top 10, cookies, auth, headers, CSRF, rate limiting, MFA, race conditions
-├── gdpr.md           # RGPD, consentement cookies, privacy policy, droits des personnes, DPA, Article 30
-├── backend.md        # Routes API, validation, logique serveur, webhooks, cron, uploads, WebSocket
-├── frontend.md       # Forms, appels client, XSS, UX sécurité, postMessage, Service Worker
-├── checks.md         # Checklist pré-livraison (critique / élevé / faible)
-├── examples.md       # 22 exemples de bugs + corrections automatiques
-└── advanced.md       # Sujets avancés (uploads, MFA, race conditions, OAuth, email infra, supply chain)
+├── SKILL.md              # Règles principales, RÈGLE D'OR obligatoire, mode always-on
+├── security.md           # OWASP, cookies, auth, headers, CSRF, rate limiting, MFA, pièges serverless, brute-force progressif
+├── gdpr.md               # RGPD, consentement cookies, privacy policy, droits des personnes, DPA, Article 30
+├── backend.md            # Routes API, validation, logique serveur, webhooks, cron, uploads, WebSocket
+├── frontend.md           # Forms, appels client, XSS, UX sécurité, postMessage, Service Worker
+├── checks.md             # Checklist pré-livraison (critique / élevé / faible) + brute-force + serverless
+├── examples.md           # 24 exemples de bugs + corrections automatiques
+├── advanced.md           # Sujets avancés (uploads, MFA, race conditions, OAuth, email infra, supply chain)
+└── false-positives.md    # 40+ patterns qui semblent sécurisés mais ne le sont pas
 ```
 
 ## 🚀 Installation
@@ -127,7 +131,7 @@ Quand une norme européenne et une norme américaine divergent, **la norme europ
 
 ## 📚 Exemples de corrections automatiques
 
-Le fichier [`examples.md`](./examples.md) contient 22 exemples détaillés de bugs courants et leur correction automatique :
+Le fichier [`examples.md`](./examples.md) contient 24 exemples détaillés de bugs courants et leur correction automatique :
 
 1. Secret API en clair dans le code
 2. Injection SQL via template string
@@ -151,6 +155,8 @@ Le fichier [`examples.md`](./examples.md) contient 22 exemples détaillés de bu
 20. Race condition sur coupon (updateMany atomique)
 21. Cookie wall RGPD (CNIL Planet49)
 22. postMessage sans validation d'origine
+23. Progressive lockout persistant (Prisma + Vercel) — pattern de référence pour /api/auth/login
+24. Route /api/admin/settings publique utilisée comme check auth
 
 ## 🤝 Contribution
 

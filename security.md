@@ -502,3 +502,221 @@ Voir `advanced.md` §4. Pour toute mutation avec check-then-update (stock, coupo
 ## 16. NEXT_PUBLIC_ LEAK — Voir `advanced.md` §20
 
 Aucune variable `NEXT_PUBLIC_*` ne doit contenir un secret. Le prefix `NEXT_PUBLIC_` inline la valeur dans le bundle JS client. Vérifier avec `rg "NEXT_PUBLIC_"` et `grep -r "sk_live\|password\|secret" .next/static/chunks/`.
+
+## 17. PIÈGES SPÉCIFIQUES AU SERVERLESS — Vercel, Netlify, Cloudflare Workers, Deno Deploy
+
+Les fonctions serverless ont des contraintes uniques qui invalident plusieurs patterns "qui semblent sécurisés". Cette section est **obligatoire** dès que le projet utilise une de ces plateformes.
+
+### 17.1 Rate limiting en mémoire = INUTILE
+
+```typescript
+// ❌ INUTILE sur Vercel — se réinitialise à chaque cold start
+const buckets = new Map<string, { count: number; resetAt: number }>();
+
+export function rateLimitMemory(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const entry = buckets.get(key);
+  if (!entry || entry.resetAt < now) {
+    buckets.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= max;
+}
+```
+
+**Pourquoi ça ne marche pas :**
+- Vercel cold start après quelques minutes d'inactivité
+- Chaque cold start = nouvelle instance = `Map` vide
+- Un attaquant patient (1 req / 5 min) contourne totalement
+- Même en hot, plusieurs instances isolées ne partagent pas la Map
+
+**Solution :** Utiliser un stockage persistant externe.
+
+```typescript
+// ✅ Upstash Redis (recommandé pour Vercel — HTTP, pas de connexion persistante)
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
+
+export const rateLimiter = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(5, '1 m'),
+  prefix: 'rl:login',
+  analytics: true,
+});
+
+// ✅ Alternative : Vercel KV (built-in)
+import { kv } from '@vercel/kv';
+
+// ✅ Alternative : Neon DB (Postgres) — si pas de Redis
+import { db } from '@/lib/db';
+// Table LoginAttempt (ip, count, lockedUntil) — voir examples.md EXEMPLE 23
+```
+
+### 17.2 Rate limit basé sur cookie = contournable
+
+```typescript
+// ❌ CONTOURNABLE — l'attaquant supprime le cookie
+export async function rateLimitByCookie(request: Request) {
+  const cookie = request.cookies.get('rate_limit');
+  // ...
+}
+```
+
+**Solution :** Baser sur l'IP via le header `x-forwarded-for` (Vercel) ou `cf-connecting-ip` (Cloudflare).
+
+```typescript
+// ✅ Basé sur l'IP — non contournable par clearing cookie
+function getClientIp(request: Request): string {
+  // Vercel: x-forwarded-for
+  // Cloudflare: cf-connecting-ip
+  // Netlify: x-nf-client-connection-ip
+  return (
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+    request.headers.get('cf-connecting-ip') ??
+    request.headers.get('x-nf-client-connection-ip') ??
+    'unknown'
+  );
+}
+```
+
+### 17.3 Sessions en mémoire = perdues
+
+```typescript
+// ❌ PERDUES à chaque cold start
+const sessions = new Map<string, { userId: string; expiresAt: Date }>();
+```
+
+**Solution :** Sessions en DB, ou JWT stateless (pas de stockage serveur).
+
+```typescript
+// ✅ Option 1 : Sessions en DB (Neon, Supabase)
+await db.session.create({
+  data: { id: sessionId, userId, expiresAt: new Date(Date.now() + 900_000) },
+});
+
+// ✅ Option 2 : JWT stateless (recommandé pour serverless)
+const token = jwt.sign({ userId }, process.env.JWT_SECRET!, { expiresIn: '15m' });
+// Pas de stockage serveur → pas de cold start issue
+// Inconvénient : pas de révocation immédiate, sauf si on stocke une blacklist
+```
+
+### 17.4 Files uploadés en `public/` = servis publiquement
+
+Sur Vercel, tout fichier dans `public/` est servi directement, sans possibilité de vérifier l'auth.
+
+```typescript
+// ❌ DANGEREUX — n'importe qui peut accéder à /uploads/evil.svg
+await fs.writeFile(`./public/uploads/${filename}`, buffer);
+```
+
+**Solution :** Stocker dans un bucket S3/R2 privé, ou dans un dossier non-servi avec une route API qui vérifie l'auth avant de servir le fichier.
+
+```typescript
+// ✅ Option 1 : S3/R2 privé + URL signée
+const url = await getSignedUrl(s3, new GetObjectCommand({ /* ... */ }), { expiresIn: 3600 });
+
+// ✅ Option 2 : Route API qui vérifie l'auth avant de servir
+// app/api/files/[id]/route.ts
+export async function GET(request: Request, { params }: { params: { id: string } }) {
+  const session = await auth();
+  if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  
+  const file = await db.file.findUnique({ where: { id: params.id } });
+  if (!file || file.userId !== session.userId) {
+    return Response.json({ error: 'Not found' }, { status: 404 });
+  }
+  
+  return new Response(file.content, {
+    headers: { 'Content-Type': file.mimeType },
+  });
+}
+```
+
+### 17.5 Timeout des fonctions serverless
+
+Vercel Hobby : 10s max par fonction. Vercel Pro : 60s. Cloudflare Workers : 30s (CPU time).
+
+**Implications :**
+- Opérations longues (génération PDF, envoi d'emails batch) → utiliser une queue (Inngest, Trigger.dev, SQS)
+- bcrypt cost 12 prend ~300ms → OK, mais ne pas paralléliser sur plusieurs logins
+- Upload de gros fichiers → streamer vers S3 directement depuis le client (presigned URL)
+
+### 17.6 Edge Middleware — Vérification JWT en Edge runtime
+
+Le middleware Next.js tourne en Edge runtime, qui ne supporte pas `jsonwebtoken` (utilise `NodeJS` crypto). Utiliser `jose`.
+
+```typescript
+// ❌ NE FONCTIONNE PAS en Edge runtime
+import jwt from 'jsonwebtoken';
+const payload = jwt.verify(token, process.env.JWT_SECRET!);
+
+// ✅ jose fonctionne en Edge runtime
+import { jwtVerify } from 'jose';
+const { payload } = await jwtVerify(
+  token,
+  new TextEncoder().encode(process.env.JWT_SECRET!)
+);
+```
+
+### 17.7 Variables d'environnement par environnement
+
+Vercel différencie Development / Preview / Production. Une variable `NEXT_PUBLIC_API_URL` peut avoir des valeurs différentes.
+
+**Vérification :**
+- Toutes les variables critiques définies en Production
+- Preview environnement protégé (Vercel Protection Password) si secrets présents
+- Pas de secrets dans Development (utiliser des valeurs factices)
+
+### 17.8 Logs serverless éphémères
+
+Les `console.log` disparaissent avec l'instance. Pour audit RGPD (art. 30, 32), utiliser un service de logs persistant.
+
+```typescript
+// ❌ Logs éphémères
+console.log('login_failed', { email, ip });
+
+// ✅ Logs persistants (Sentry, Axiom, Logflare, Datadog)
+import * as Sentry from '@sentry/nextjs';
+Sentry.captureMessage('login_failed', {
+  level: 'warning',
+  tags: { ip: maskIp(ip) },
+  extra: { email: maskEmail(email) },
+});
+```
+
+## 18. BRUTE-FORCE PROTECTION — Lockout progressif et persistant
+
+La protection brute-force ne se limite pas à un rate limit simple. Elle doit être **progressive** (escalade des temps de lockout) et **persistante** (survit aux cold starts et au clearing des cookies).
+
+### Schedule de lockout progressif
+
+| Tentatives échouées | Durée du lockout |
+|---|---|
+| 3 | 30 secondes |
+| 5 | 1 minute |
+| 7 | 5 minutes |
+| 10 | 15 minutes |
+| 15 | 1 heure |
+| 20 | 24 heures |
+| 25+ | Permanent (levée manuelle DB uniquement) |
+
+### Règles critiques
+
+1. **Compteur stocké en DB** (Prisma, Postgres) ou Redis — **JAMAIS en mémoire**
+2. **Basé sur l'IP** (`x-forwarded-for` sur Vercel) — **JAMAIS sur un cookie client**
+3. **Survit aux cold starts serverless** (donc DB ou Redis, pas Map)
+4. **Ne peut PAS être contourné par :**
+   - Clearing les cookies du navigateur
+   - Redémarrant le navigateur
+   - Changeant de user-agent
+   - Utilisant un incognito mode
+5. **Après un lockout expiré**, le compteur n'est **PAS remis à 0** — l'échec suivant doit escalader (ex: après un lockout de 5 min, le 8e échec → 15 min, pas retour à 30s)
+6. **Sur login réussi**, le compteur est remis à 0
+7. **L'UI affiche le temps restant** avant retry (countdown)
+8. **Le header HTTP `Retry-After`** est renvoyé avec le status 429
+9. **Les messages d'erreur ne leakent PAS** le nombre exact de tentatives (sauf pour avertir l'utilisateur légitime : "Trop de tentatives. Réessayez dans 5 minutes.")
+
+### Implémentation complète — Voir `examples.md` EXEMPLE 23
+
+Le pattern complet (Prisma schema + logique de lockout + route API + UI) est documenté dans `examples.md` EXEMPLE 23. Réutiliser ce code pour toute route `/api/auth/login`.

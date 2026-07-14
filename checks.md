@@ -14,8 +14,22 @@ Cette checklist doit être exécutée **avant de marquer toute tâche de génér
 ### Authentification & autorisation
 - [ ] Toute route `app/api/**/route.ts` sensible appelle `auth()` ou `getSession()`
 - [ ] Toute mutation vérifie l'appartenance de la ressource (`resource.userId === session.userId`) ou le rôle
-- [ ] Login rate-limité (5 tentatives/min/IP)
-- [ ] Lockout après 5 échecs (15 min)
+- [ ] Login rate-limité ET **PERSISTANT en base de données** (PAS en mémoire — les fonctions serverless Vercel se réinitialisent à chaque cold start)
+- [ ] Rate limit **basé sur l'IP** (`x-forwarded-for` sur Vercel) — PAS sur un cookie (clearing les cookies ne doit PAS contourner la protection)
+- [ ] **Lockout PROGRESSIF** (smartphone-style) :
+  - 3 failed → 30 sec
+  - 5 failed → 1 min
+  - 7 failed → 5 min
+  - 10 failed → 15 min
+  - 15 failed → 1 hour
+  - 20 failed → 24 hours
+  - 25+ → permanent (manuel DB)
+- [ ] Le compteur d'échecs est **PERSISTANT** (DB, Redis, ou Upstash — PAS en mémoire)
+- [ ] Après un lockout expiré, le compteur n'est **PAS remis à 0** (l'échec suivant doit escalader, pas recommencer à 0)
+- [ ] Sur login réussi, le compteur est remis à 0
+- [ ] L'utilisateur voit le temps restant (countdown dans l'UI)
+- [ ] Header HTTP `Retry-After` renvoyé avec le status 429
+- [ ] Les messages d'erreur ne leakent pas le nombre exact de tentatives (sauf pour avertir l'utilisateur légitime)
 - [ ] Logout invalide la session serveur (pas juste le cookie)
 - [ ] Reset password : token à usage unique, expiration ≤ 15 min, invalidation des sessions existantes
 - [ ] Mots de passe : `bcrypt` cost ≥ 12 ou `argon2id`
@@ -91,13 +105,42 @@ Cette checklist doit être exécutée **avant de marquer toute tâche de génér
 
 ## ⚠️ ÉLEVÉ — Corriger avant livraison
 
-### Rate limiting
-- [ ] `/api/auth/login` rate-limité
+### Rate limiting — QUALITÉ requise (pas seulement présence)
+- [ ] `/api/auth/login` rate-limité ET persistant (DB/Redis, PAS en mémoire)
 - [ ] `/api/auth/register` rate-limité
 - [ ] `/api/auth/reset-password` rate-limité
 - [ ] `/api/contact` rate-limité
 - [ ] `/api/newsletter/subscribe` rate-limité
 - [ ] Tout endpoint public sensible rate-limité
+- [ ] ⚠️ **Faux positif #1** : pas de `const buckets = new Map()` pour le rate limit (cold start serverless)
+- [ ] ⚠️ **Faux positif #2** : rate limit basé sur l'IP, PAS sur un cookie client
+- [ ] Rate limit utilise Upstash Redis / Vercel KV / Neon DB / Supabase (persistant)
+- [ ] Si en mémoire, il s'agit d'un environnement non-serverless (long-running Node.js)
+
+### Brute-force protection — PROGRESSIVE + PERSISTANT
+- [ ] Compteur d'échecs stocké en **DB** (PAS en mémoire)
+- [ ] Basé sur l'**IP** (header `x-forwarded-for` sur Vercel)
+- [ ] **Lockout progressif** (voir schedule dans `security.md` §18)
+  - 3 / 5 / 7 / 10 / 15 / 20 / 25+ échecs → 30s / 1min / 5min / 15min / 1h / 24h / permanent
+- [ ] Le lockout **survit aux cold starts serverless** (DB ou Redis)
+- [ ] Le lockout **ne peut PAS être contourné** en :
+  - Clearing les cookies du navigateur
+  - Redémarrant le navigateur
+  - Changeant de user-agent
+- [ ] Seul un login réussi OU l'expiration du lockout remet le compteur à 0 (ou partiellement)
+- [ ] L'UI affiche le temps restant avant retry (countdown)
+- [ ] Le header HTTP `Retry-After` est renvoyé avec le status 429
+- [ ] Les messages d'erreur ne leakent pas le nombre exact de tentatives
+
+### Serverless pitfalls — Voir `security.md` §17
+- [ ] ⚠️ Pas de state en mémoire (`Map`, `WeakMap`, variable globale) pour sessions, rate limits, ou compteurs
+- [ ] ⚠️ Sessions stockées en DB ou via JWT stateless (pas de `Map<sessionId, userId>`)
+- [ ] ⚠️ Files uploadés en bucket privé (S3/R2) ou via route API auth — PAS dans `public/`
+- [ ] ⚠️ Logs persistants (Sentry/Axiom/Datadog) — `console.log` disparaît avec l'instance
+- [ ] Edge Middleware utilise `jose` (pas `jsonwebtoken`) pour vérifier les JWT
+- [ ] Variables d'environnement définies en Production Vercel (pas juste Preview)
+- [ ] Preview Vercel protégé par mot de passe si secrets présents
+- [ ] Opérations longues (>10s) utilisent une queue (Inngest, Trigger.dev, SQS)
 
 ### Endpoints sensibles
 - [ ] Changement de password exige le password actuel
@@ -304,7 +347,7 @@ jobs:
 
 ## 📋 TEMPLATE DE RAPPORT DE VÉRIFICATION
 
-À inclure dans la réponse de fin de tâche :
+À inclure dans la réponse de fin de tâche — **OBLIGATOIRE** (même si aucune correction) :
 
 ```
 🔒 Compliance Guardian — Vérification finale
@@ -312,17 +355,33 @@ jobs:
 ✅ CRITIQUE
 - [✓] Aucun secret en clair
 - [✓] Toutes les routes API sensibles authentifiées
-- [✓] Cookies : HttpOnly + Secure + SameSite
+- [✓] Cookies : HttpOnly + Secure + SameSite + __Host- prefix
 - [✓] Validation Zod sur tous les inputs
 - [✓] CSP et headers de sécurité configurés
 - [✓] Bannière cookies RGPD
 - [✓] Page /privacy et /legal
 
 ⚠️ ÉLEVÉ
-- [✓] Rate limiting sur /api/auth/*
+- [✓] Rate limiting PERSISTANT (DB/Redis, pas mémoire) sur /api/auth/*
+- [✓] Brute-force protection PROGRESSIVE (3→30s, 5→1min, ..., 25+→permanent)
+- [✓] Rate limit basé sur l'IP (pas cookie)
 - [✓] CSRF sur mutations
 - [✓] Routes client correspondent à routes serveur
 - [⚠️] Tests unitaires : 60% coverage, cible 80%
+
+🛡️ SERVERLESS (si Vercel/Netlify/CF Workers)
+- [✓] Pas de state en mémoire pour sessions/rate limits
+- [✓] Files uploadés hors public/ (bucket privé)
+- [✓] Edge Middleware utilise jose (pas jsonwebtoken)
+- [✓] Logs persistants (Sentry/Axiom)
+
+❌ FAUX POSITIFS — Patterns invalides rejetés
+- [✓] Pas de `const buckets = new Map()` pour rate limit
+- [✓] Pas de rate limit basé sur cookie
+- [✓] Pas de `if (input === password)` (timingSafeEqual)
+- [✓] Pas de `maxAge` sur cookie session admin
+- [✓] `.env.example` autorisé dans .gitignore
+- [✓] Pas de `GET /api/admin/settings` publique pour check auth
 
 ℹ️ FAIBLE
 - [ℹ️] RGAA : 3 éléments à contraste AA à corriger
@@ -330,3 +389,5 @@ jobs:
 
 STATUT : LIVRABLE avec réserves mineures
 ```
+
+**Rappel :** La section `🔒 Compliance Guardian` est **OBLIGATOIRE** dans toute réponse contenant du code web. Sans elle, la tâche est considérée incomplète.

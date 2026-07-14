@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-06
+
+### Added — Renforcement suite à usage réel Next.js + Prisma + Vercel + Neon
+
+#### Nouveau fichier `false-positives.md`
+- 40+ patterns qui semblent sécurisés mais ne le sont pas en réalité
+- Tableau structuré : Pattern / Semble OK / Problème réel / Correction attendue
+- Couvre : rate limit en mémoire, rate limit basé sur cookie, `===` pour password, `maxAge` sur cookie admin, `.env*` sans `!.env.example`, route publique check auth, `localStorage` pour token, JWT sans `expiresIn`, bcrypt cost 10, `Math.random()`, etc.
+
+#### SKILL.md — RÈGLE D'OR obligatoire et non-contournable
+- Nouvelle section "RÈGLE D'OR — OBLIGATOIRE ET NON-CONTOURNABLE"
+- 5 étapes obligatoires avant tout retour de code web (ouvrir checks.md, vérifier qualité, consulter false-positives.md, pièges serverless, ajouter section Compliance Guardian)
+- Marqueur de fin obligatoire : la réponse ne peut JAMAIS se terminer sans `🔒 Compliance Guardian`
+- Nouvelle section "PRINCIPE FONDAMENTAL — QUALITÉ PAS PRÉSENCE" avec tableau de comparaison
+- Frontmatter mis à jour avec `serverless: [vercel, netlify, cloudflare-workers, deno-deploy]`
+
+#### security.md — Nouvelles sections §17 et §18
+- §17 "PIÈGES SPÉCIFIQUES AU SERVERLESS" (8 sous-sections) :
+  - 17.1 Rate limiting en mémoire = INUTILE (cold start Vercel)
+  - 17.2 Rate limit basé sur cookie = contournable
+  - 17.3 Sessions en mémoire = perdues
+  - 17.4 Files uploadés en `public/` = servis publiquement
+  - 17.5 Timeout des fonctions serverless (10s Vercel Hobby)
+  - 17.6 Edge Middleware — `jose` au lieu de `jsonwebtoken`
+  - 17.7 Variables d'environnement par environnement (Dev/Preview/Prod)
+  - 17.8 Logs serverless éphémères (Sentry/Axiom)
+- §18 "BRUTE-FORCE PROTECTION — Lockout progressif et persistant" :
+  - Schedule de lockout : 3→30s, 5→1min, 7→5min, 10→15min, 15→1h, 20→24h, 25+→permanent
+  - 9 règles critiques (DB-based, IP-based, non-contournable, escalade, reset on success, UI countdown, Retry-After, no leak)
+
+#### checks.md — Enrichissement majeur
+- Section "Authentification & autorisation" : remplacement de 2 lignes simples par 11 checkpoints détaillés (rate limit persistant, IP-based, lockout progressif, escalade, countdown, Retry-After, no leak)
+- Nouvelle section "Rate limiting — QUALITÉ requise" (faux positifs #1 et #2 intégrés)
+- Nouvelle section "Brute-force protection — PROGRESSIVE + PERSISTANT" (12 checkpoints)
+- Nouvelle section "Serverless pitfalls — Voir security.md §17" (8 checkpoints)
+- Template de rapport de vérification enrichi avec sections Serverless et Faux positifs
+
+#### examples.md — EXEMPLES 23 et 24
+- EXEMPLE 23 : Progressive lockout persistant (Prisma + Vercel)
+  - Pattern de référence complet pour `/api/auth/login`
+  - Schéma Prisma `LoginAttempt`
+  - Logique de lockout progressif (`LOCKOUT_SCHEDULE`)
+  - Route API complète avec `Retry-After`, message neutre, cookie `__Host-`
+  - UI React avec countdown
+  - Job cron de purge
+- EXEMPLE 24 : Route `/api/admin/settings` publique utilisée comme check auth
+  - Séparation check auth (`/api/admin/me`) vs données sensibles (`/api/admin/settings`)
+  - Jamais de secrets retournés par la route de check
+
+### Changed
+- `SKILL.md` description : mention brute-force PROGRESSIF, pièges serverless, faux positifs, qualité pas présence
+- `SKILL.md` dimension #8 (rate limiting) enrichie avec exigence DB/Redis + lockout progressif + IP-based
+- `SKILL.md` dimension #6 (cookies) enrichie avec "pas de maxAge sur cookie session admin"
+- `README.md` caractéristiques mises à jour (vérification obligatoire, qualité pas présence, pièges serverless, brute-force progressif)
+- `README.md` structure : ajout du fichier `false-positives.md`
+- `README.md` : 22 → 24 exemples
+
+### Fixed — Issues identifiés en usage réel
+- Le skill validait la PRÉSENCE d'un rate limit sans vérifier sa QUALITÉ (en mémoire = KO sur Vercel)
+- Le skill n'avait pas de mécanisme d'auto-déclenchement (frontmatter `always-on` insuffisant)
+- Le skill ne couvrait pas les pièges serverless (cold start, `public/`, Edge runtime)
+- Le skill n'avait pas de liste de faux positifs (validait des patterns qui semblent OK mais ne le sont pas)
+- Le skill n'exigeait pas la section `🔒 Compliance Guardian` dans toute réponse
+
 ## [1.2.0] - 2026-07-06
 
 ### Added
